@@ -506,3 +506,39 @@ def test_error_after_session_created_leaves_no_session_open(
     [data] = rig.sessions()
     assert data["state"] == "complete"
     assert data["stop_reason"] == "error: RuntimeError: bad camera description"
+
+
+class VideoOnlyCamera:
+    """First run writes video bytes and an empty meta, then dies; later runs are fakes."""
+
+    def __init__(self, clock: Callable[[], int]) -> None:
+        self._cam = CountingCamera(clock, fail_starts=1)
+        self.segments = self._cam.segments
+        self.first = True
+
+    def start(self, paths: SegmentPaths) -> CameraRun:
+        if self.first:
+            self.first = False
+            paths.video.write_bytes(b"\x00\x00\x00\x01video")
+            paths.meta.write_text("")
+        return self._cam.start(paths)
+
+    def describe(self) -> dict[str, Any]:
+        return self._cam.describe()
+
+
+@pytest.mark.parametrize("meta", ["empty", "missing"])
+def test_camera_retry_never_overwrites_video(
+    make_rig: Callable[..., Rig], tmp_path: Path, meta: str
+) -> None:
+    rig = make_rig(camera=VideoOnlyCamera)
+    rig.tick_at(0)  # the first run dies at once, leaving video but no frame
+    session = rig.sup.session
+    assert session is not None
+    seg0 = session.segment(0)
+    if meta == "missing":
+        seg0.meta.unlink()
+    rig.tick_at(1.0)  # retry due
+    assert rig.camera.segments == [0, 1]
+    assert seg0.video.read_bytes() == b"\x00\x00\x00\x01video"
+    assert rig.state() == ("recording", "recording")

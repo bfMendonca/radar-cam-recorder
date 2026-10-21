@@ -351,8 +351,8 @@ class Supervisor:
             return
         retry, segment = self._camera_retry, self._segment
         if self._camera_run is None and retry.due(now) and segment is not None:
-            if _has_frames(segment.meta):
-                self._rotate(now)  # never overwrite recorded frames
+            if _has_recording(segment):
+                self._rotate(now)  # never overwrite recorded video or frames
             else:
                 self._start_camera(segment, now)  # only empty camera files are replaced
         run, segment = self._camera_run, self._segment
@@ -453,10 +453,20 @@ def _attempt(what: str, fn: Callable[[], T], default: T) -> T:
         return default
 
 
-def _has_frames(meta: Path) -> bool:
-    """True if ``meta`` holds a frame, or cannot be read (then it must not be overwritten)."""
+def _has_recording(segment: SegmentPaths) -> bool:
+    """True unless the segment's video is absent or empty and its meta has no frame.
+
+    Anything that cannot be checked counts as recorded, so it is never overwritten.
+    """
     try:
-        text = meta.read_text(encoding="utf-8", errors="replace")
+        if segment.video.stat().st_size > 0:
+            return True
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return True
+    try:
+        text = segment.meta.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return False
     except OSError:
