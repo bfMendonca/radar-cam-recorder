@@ -138,6 +138,20 @@ updated unit as in "Service" above.
 The recorder starts **idle** (running, not recording) on every start; set
 `[control] start_mode = "record"` to record at start for unattended use.
 
+**Behaviour change:** earlier versions recorded as soon as the service started. After
+upgrading, an unattended install stays idle and records nothing until a double press (or
+`USR2`). To record at start again, add this new table to `/etc/radar-cam-recorder.toml`
+(the file has no `[control]` table unless you added one) and restart the service:
+
+```toml
+[control]
+start_mode = "record"
+```
+
+```sh
+sudo systemctl restart radar-cam-recorder
+```
+
 | Press | In idle | While recording or degraded | Waiting for devices, disk full, storage missing |
 | --- | --- | --- | --- |
 | Single | rejected | close the session (`complete`, safe to copy) and open a new one | rejected |
@@ -161,7 +175,8 @@ sudo systemctl kill --kill-whom=main -s USR2 radar-cam-recorder   # start / stop
 
 | Meaning (state) | Green | Red |
 | --- | --- | --- |
-| Booting / starting | fast blink | off |
+| Kernel boot (before the recorder runs) | 1 Hz blink (timer) | off |
+| Recorder `starting` | fast blink | off |
 | Idle, ready | steady on | off |
 | Idle after a problem (crash, kill, watchdog, interrupted session) until the next press | steady on | slow blink |
 | Recording, all OK | pulses while data reaches the disk | off |

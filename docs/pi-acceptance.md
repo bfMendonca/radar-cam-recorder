@@ -456,20 +456,22 @@ Wire as in the README (green GPIO 17 / pin 11, red GPIO 27 / pin 13, button GPIO
 GND pins 9, 14, 6). Run `radar-cam-recorder status --config /etc/radar-cam-recorder.toml`
 and `journalctl -u radar-cam-recorder -f` over SSH while you test.
 
-1. Boot: power the Pi. Green fast-blinks from power-on, then steady (idle), red off.
+1. Boot: power the Pi. Green blinks at 1 Hz from kernel start, then fast-blinks while the recorder is `starting`, then steady (idle), red off.
 2. Double press: recording starts, green pulses, a new session appears and is `in_progress`.
    Double press again: that session becomes `complete`, back to idle.
 3. Single press while recording: the session closes `complete` and a new one opens; run the
-   README `rsync` copy command while recording continues and check the closed session arrives.
+   README "Copying sessions" section while recording continues and check the closed session arrives.
 4. Long press, 5 s, with the recorder frozen (`sudo systemctl kill --kill-whom=main -s STOP
-   radar-cam-recorder`). (The red fast blink after 5 s appears only when the recorder runs;
+   radar-cam-recorder`). The watchdog restarts a frozen recorder about 30 s after the STOP, so
+   start the hold within about 25 s of sending it. (The red fast blink after 5 s appears only when the recorder runs;
    frozen, it cannot.) Expected: the Pi powers off (logind), the LEDs go dark (to confirm that
    `gpio-leds` turns them off at halt, R8), and then one press on the button powers it back on
-   (wake from halt on GPIO 3). Also time the hold: logind's threshold is 5 s from memory.
+   (wake from halt on GPIO 3). Time the hold with a stopwatch from button down to the Pi powering off (green/red off, SSH
+   dropped): expect about 5 s (logind's threshold is 5 s from memory).
    Repeat once with the recorder healthy: red fast blink after 5 s, then poweroff.
 5. Recording, then `sudo systemctl kill --kill-whom=main -s STOP radar-cam-recorder`: green
    dark within 5 s; after about 30 s the watchdog restarts the recorder; it returns idle with
-   the red slow blink; a button press (single, rejected) clears it.
+   the red slow blink; any press clears the warning.
 6. `sudo systemctl kill --kill-whom=main -s KILL radar-cam-recorder`: red solid for the 5 s
    restart delay, then idle with the red warning blink.
 7. Unplug an LED or the button (power off first for the wiring), start the recorder: it keeps

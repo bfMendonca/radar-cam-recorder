@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Behaviour change:** the recorder now starts idle on every start (power-on, crash and
+  watchdog restarts too) instead of recording. An unattended install stops recording after
+  upgrading until `[control] start_mode = "record"` is added to
+  `/etc/radar-cam-recorder.toml` and the service is restarted (see the README).
+
 ### Added
 
 - Status LEDs (green GPIO 17, red GPIO 27) and one button (GPIO 3) through kernel devices:
