@@ -38,6 +38,7 @@ def make_cfg(binary: str = str(FAKE_BIN), extra: tuple[str, ...] = ()) -> Camera
         bitrate=4_000_000,
         extra_args=extra,
         stop_timeout_s=5.0,
+        stall_timeout_s=10.0,
     )
 
 

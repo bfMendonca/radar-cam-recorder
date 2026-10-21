@@ -101,6 +101,8 @@ class Supervisor:
         self._radar_retry = _Backoff(cfg.retry_initial_s, cfg.retry_max_s)
         self._radar_started = False
         self._camera_up_since_ns: int | None = None  # start of the current run of good runs
+        self._meta_size = 0  # stall watchdog: meta size and when it last grew (boot clock)
+        self._meta_grew_ns = 0
         self._shutdown_lock = threading.Lock()
         self._shut_down = False
         bus.add_sink(self)
@@ -297,6 +299,8 @@ class Supervisor:
             return
         if self._camera_up_since_ns is None:
             self._camera_up_since_ns = now
+        self._meta_size = 0
+        self._meta_grew_ns = now  # the grace period: one stall timeout after the start
 
     def _stop_camera(self) -> int:
         """Stop the camera run and write the segment's frames CSV; return its frame count."""
@@ -359,9 +363,21 @@ class Supervisor:
         if run is None or segment is None:
             return
         if run.alive():
-            up_since = self._camera_up_since_ns
-            if retry.failing and up_since is not None and now - up_since >= self._segment_ns():
-                retry.reset()  # the camera survived a full segment
+            stalled_ns = self._camera_stalled_ns(segment, now)
+            if stalled_ns is None:
+                up_since = self._camera_up_since_ns
+                if retry.failing and up_since is not None and now - up_since >= self._segment_ns():
+                    retry.reset()  # the camera survived a full segment
+                return
+            # Alive but no new frames: as bad as an exit (spec: missing data is a failure).
+            self._camera_up_since_ns = None
+            if retry.fail(now):
+                self._bus.incident(
+                    "camera stalled", segment=segment.index, stalled_s=stalled_ns / 1e9
+                )
+            else:
+                log.debug("camera stalled again")
+            self._stop_camera()
             return
         self._camera_up_since_ns = None
         if retry.fail(now):
@@ -374,6 +390,19 @@ class Supervisor:
         else:
             log.debug("camera exited again with %s", run.returncode)
         self._stop_camera()
+
+    def _camera_stalled_ns(self, segment: SegmentPaths, now: int) -> int | None:
+        """How long the meta file has not grown, once that reaches ``stall_timeout_s``."""
+        try:
+            size = segment.meta.stat().st_size
+        except FileNotFoundError:
+            size = 0
+        if size > self._meta_size:
+            self._meta_size = size
+            self._meta_grew_ns = now
+            return None
+        stalled_ns = now - self._meta_grew_ns
+        return stalled_ns if stalled_ns >= self._cfg.camera.stall_timeout_s * 1e9 else None
 
     def _check_radar(self, now: int) -> None:
         if self._radar is None:

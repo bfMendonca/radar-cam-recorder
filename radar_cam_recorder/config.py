@@ -60,6 +60,7 @@ class CameraConfig:
     bitrate: int
     extra_args: tuple[str, ...]
     stop_timeout_s: float
+    stall_timeout_s: float
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
             "bitrate",
             "extra_args",
             "stop_timeout_s",
+            "stall_timeout_s",
         },
     )
     extra = cam.get("extra_args", [])
@@ -216,8 +218,9 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         bitrate=_get(cam, "camera", "bitrate", 4_000_000, int),
         extra_args=tuple(extra),
         stop_timeout_s=_get(cam, "camera", "stop_timeout_s", 5.0, float),
+        stall_timeout_s=_get(cam, "camera", "stall_timeout_s", 10.0, float),
     )
-    for key in ("width", "height", "framerate", "bitrate", "stop_timeout_s"):
+    for key in ("width", "height", "framerate", "bitrate", "stop_timeout_s", "stall_timeout_s"):
         _positive("camera", key, getattr(camera, key))
 
     rad = _table(data, "radar", {"enabled", "port", "baudrate", "silence_timeout_s", "detection"})
@@ -300,6 +303,7 @@ def config_to_dict(cfg: Config) -> dict[str, Any]:
             "bitrate": cfg.camera.bitrate,
             "extra_args": list(cfg.camera.extra_args),
             "stop_timeout_s": cfg.camera.stop_timeout_s,
+            "stall_timeout_s": cfg.camera.stall_timeout_s,
         },
         "radar": {
             "enabled": cfg.radar.enabled,

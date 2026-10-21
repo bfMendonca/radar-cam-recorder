@@ -20,6 +20,7 @@ framerate = 25.0         # frames per second
 bitrate = 4000000        # video bitrate, bits per second
 extra_args = []          # extra arguments appended to the capture command
 stop_timeout_s = 5.0     # wait this long for the camera to stop before killing it, seconds
+stall_timeout_s = 10.0   # camera alive but no new frame metadata for this long: restart it, seconds
 
 [radar]
 enabled = true           # record radar data

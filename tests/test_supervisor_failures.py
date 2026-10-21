@@ -33,7 +33,9 @@ def make_cfg(root: Path, *, camera: dict[str, Any] | None = None, **recording: A
         {
             "recording": {"segment_s": 60.0, "retry_initial_s": 1.0, **recording},
             "storage": {"recordings_dir": str(root), "check_interval_s": 0.5},
-            "camera": {"binary": str(FAKE_BIN), **(camera or {})},
+            # FakeCamera writes on the real clock while these tests jump the manual one:
+            # keep the stall watchdog out of the way unless a test sets it.
+            "camera": {"binary": str(FAKE_BIN), "stall_timeout_s": 1000.0, **(camera or {})},
         }
     )
 
@@ -542,3 +544,103 @@ def test_camera_retry_never_overwrites_video(
     assert rig.camera.segments == [0, 1]
     assert seg0.video.read_bytes() == b"\x00\x00\x00\x01video"
     assert rig.state() == ("recording", "recording")
+
+
+class ManualRun:
+    def __init__(self, paths: SegmentPaths) -> None:
+        self.paths = paths
+        self.frames = 0
+        self.stopped = False
+        paths.meta.write_text("[\n")
+
+    @property
+    def returncode(self) -> int | None:
+        return 0 if self.stopped else None
+
+    def alive(self) -> bool:
+        return not self.stopped
+
+    def stop(self, timeout: float) -> None:
+        self.stopped = True
+
+    def write_frame(self, sensor_ts: int) -> None:
+        with open(self.paths.meta, "a", encoding="utf-8") as fh:
+            fh.write(("" if self.frames == 0 else ",\n") + f'{{"SensorTimestamp": {sensor_ts}}}')
+        self.frames += 1
+
+
+class ManualCamera:
+    """Runs stay alive until stopped and write a frame only when the test says so."""
+
+    def __init__(self, clock: Callable[[], int]) -> None:
+        self._clock = clock
+        self.runs: list[ManualRun] = []
+        self.starts: list[int] = []
+
+    def start(self, paths: SegmentPaths) -> CameraRun:
+        self.starts.append(self._clock())
+        self.runs.append(ManualRun(paths))
+        return self.runs[-1]
+
+    def describe(self) -> dict[str, Any]:
+        return {"backend": "manual"}
+
+
+def stall_rig(make_rig: Callable[..., Rig], tmp_path: Path) -> Rig:
+    return make_rig(make_cfg(tmp_path, camera={"stall_timeout_s": 2.0}), camera=ManualCamera)
+
+
+def test_no_false_stall_while_frames_arrive(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
+    rig = stall_rig(make_rig, tmp_path)
+    for step in range(40):  # 0 to 9.75 s, one frame per tick
+        rig.tick_at(step * 0.25)
+        rig.camera.runs[-1].write_frame(step)
+        if step % 4 == 0:
+            rig.feed_radar()
+        assert rig.state() == ("recording", "recording")
+    assert len(rig.camera.runs) == 1
+    rig.sup.shutdown()
+    assert rig.incidents("camera stalled") == []
+
+
+def test_camera_stall_without_frames(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
+    rig = stall_rig(make_rig, tmp_path)
+
+    def tick(t: float) -> None:
+        rig.tick_at(t)
+        if round(t * 4) % 4 == 0:
+            rig.feed_radar()
+
+    for step in range(8):  # 0 to 1.75 s: grace after start
+        tick(step * 0.25)
+        assert rig.state() == ("recording", "recording")
+    tick(2.0)
+    first = rig.camera.runs[0]
+    assert first.stopped
+    assert rig.state() == ("degraded", "camera missing")
+    for step in range(9, 33):  # to 8 s
+        tick(step * 0.25)
+    assert [s / S for s in rig.camera.starts] == [0, 3, 7]  # stalls at 2 and 5: backoff 1, 2
+    assert [r.paths.index for r in rig.camera.runs] == [0, 0, 0]  # nothing recorded, same segment
+    rig.sup.shutdown()
+    assert rig.incidents("camera stalled") == [{"segment": 0, "stalled_s": 2.0}]
+
+
+def test_camera_stall_after_frames(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
+    rig = stall_rig(make_rig, tmp_path)
+    rig.tick_at(0)
+    for step in range(1, 5):  # frames until 1 s, then nothing
+        rig.camera.runs[-1].write_frame(step)
+        rig.tick_at(step * 0.25)
+    rig.feed_radar()
+    rig.tick_at(2.75)
+    assert rig.state() == ("recording", "recording")
+    rig.tick_at(3.0)  # 2 s since the meta last grew
+    assert rig.state() == ("degraded", "camera missing")
+    seg0 = rig.camera.runs[0].paths
+    assert len(seg0.frames.read_text().splitlines()) == 1 + 4  # frames CSV written
+    rig.tick_at(4.0)  # retry: segment 0 has frames, so a new segment
+    assert [r.paths.index for r in rig.camera.runs] == [0, 1]
+    assert rig.state() == ("recording", "recording")
+    rig.sup.shutdown()
+    assert rig.incidents("camera stalled") == [{"segment": 0, "stalled_s": 2.0}]

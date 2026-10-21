@@ -19,6 +19,7 @@ def test_minimal_config_uses_defaults(tmp_path: Path) -> None:
     assert cfg.storage.resume_above_bytes == 1536 * 2**20
     assert cfg.segment_s == 300
     assert cfg.camera.framerate == 25
+    assert cfg.camera.stall_timeout_s == 10.0
     assert cfg.radar.silence_timeout_s == 5
     assert cfg.radar.detection is None
 
@@ -44,6 +45,8 @@ def test_detection_and_geometry_parsed(tmp_path: Path) -> None:
         {"storage": {"recordings_dir": "/x", "stop_below_mb": 2000, "resume_above_mb": 1000}},
         {"storage": {"recordings_dir": "/x"}, "recording": {"segment_s": 0}},
         {"storage": {"recordings_dir": "/x"}, "camera": {"framerate": 0}},
+        {"storage": {"recordings_dir": "/x"}, "camera": {"stall_timeout_s": 0}},
+        {"storage": {"recordings_dir": "/x"}, "camera": {"stall_timeout_s": -1.0}},
         {"storage": {"recordings_dir": "/x"}, "unknown": {}},
         {"storage": {"recordings_dir": "/x", "typo": 1}},
         {
@@ -65,8 +68,12 @@ def test_invalid_config_rejected(bad: dict[str, Any]) -> None:
 
 
 def test_example_config_loads() -> None:
-    load_config(Path("deploy/config.example.toml"))
+    cfg = load_config(Path("deploy/config.example.toml"))
+    assert cfg.camera.stall_timeout_s == 10.0
 
 
 def test_snapshot_is_json() -> None:
-    json.dumps(config_to_dict(parse_config({"storage": {"recordings_dir": "/x"}})))
+    cfg = parse_config({"storage": {"recordings_dir": "/x"}, "camera": {"stall_timeout_s": 7.5}})
+    snapshot = config_to_dict(cfg)
+    json.dumps(snapshot)
+    assert snapshot["camera"]["stall_timeout_s"] == 7.5
