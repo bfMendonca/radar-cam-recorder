@@ -34,8 +34,17 @@ install -m 755 /tmp/uv-arm-unknown-linux-musleabihf/uv ~/.local/bin/uv
 uv --version
 ```
 
+The repo's `.python-version` (3.9) is for the Mac. On the Pi, make uv use the system
+Python 3.11 for every command by adding this to `~/.profile` (then log in again):
+
 ```sh
-uv sync --python /usr/bin/python3
+export UV_PYTHON=/usr/bin/python3
+```
+
+```sh
+cd ~/workspace/radar-cam-recorder
+uv sync               # the test group pins a pure-Python hypothesis: nothing to compile
+uv run pytest -q      # slow on a Pi Zero: allow several minutes
 ```
 
 The service must run from this environment (`.venv/bin/radar-cam-recorder`).
@@ -51,6 +60,12 @@ radar-cam-recorder check-config --config /etc/radar-cam-recorder.toml
 ```
 
 Set `camera.enabled = false` or `radar.enabled = false` to record one device only.
+
+`camera.stall_timeout_s` (default 10 s) is the frame watchdog: if `rpicam-vid` stays alive
+but its frame metadata stops growing for that long, the recorder logs a `camera stalled`
+incident, stops the camera and restarts it as a camera failure (state `degraded`,
+`camera missing`, retried with backoff). A new run gets the same time to deliver its
+first frame.
 
 ## Service
 
@@ -126,6 +141,8 @@ rm -f "$skip"
 ## Known limits
 
 - Each segment rotation leaves a 1-2 s gap in the video.
+- Right after boot the camera stack needs about 10 s: expect one `camera exited` (or
+  `camera stalled`) incident and a short `degraded` spell before recording settles.
 - Video and radar are aligned to about 50 ms.
 - The Pi Zero has no RTC: wall-clock times are unreliable until NTP syncs, so rely on
   the monotonic timestamps and the recorded clock samples.
