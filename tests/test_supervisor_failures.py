@@ -80,7 +80,7 @@ class FlakyRadar(RadarStream):
 
     def __init__(self, clock: Callable[[], int], fail_starts: int) -> None:
         self.transport = fake_radar_transport()
-        super().__init__(make_cfg(Path("unused")).radar, lambda: self.transport)
+        super().__init__(make_cfg(Path("/unused")).radar, lambda: self.transport)
         self._clock = clock
         self._fail_starts = fail_starts
         self.starts: list[int] = []

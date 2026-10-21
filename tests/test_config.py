@@ -48,6 +48,26 @@ def test_detection_and_geometry_parsed(tmp_path: Path) -> None:
         {"storage": {"recordings_dir": "/x"}, "camera": {"stall_timeout_s": 0}},
         {"storage": {"recordings_dir": "/x"}, "camera": {"stall_timeout_s": -1.0}},
         {"storage": {"recordings_dir": "/x"}, "unknown": {}},
+        {"storage": {"recordings_dir": ""}},
+        {"storage": {"recordings_dir": "relative/rec"}},
+        {"storage": {"recordings_dir": "/x"}, "recording": {"segment_s": float("inf")}},
+        {"storage": {"recordings_dir": "/x"}, "recording": {"retry_max_s": float("nan")}},
+        {"storage": {"recordings_dir": "/x", "check_interval_s": float("nan")}},
+        {"storage": {"recordings_dir": "/x"}, "camera": {"framerate": float("inf")}},
+        {"storage": {"recordings_dir": "/x"}, "camera": {"stop_timeout_s": float("nan")}},
+        {"storage": {"recordings_dir": "/x"}, "radar": {"silence_timeout_s": float("inf")}},
+        {"storage": {"recordings_dir": "/x"}, "setup": {"geometry": {"h_m": float("nan")}}},
+        {
+            "storage": {"recordings_dir": "/x"},
+            "radar": {
+                "detection": {
+                    "max_distance_m": 50,
+                    "direction": ["both"],
+                    "min_speed_kmh": 1,
+                    "no_target_delay_s": 1,
+                }
+            },
+        },
         {"storage": {"recordings_dir": "/x", "typo": 1}},
         {
             "storage": {"recordings_dir": "/x"},

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -110,6 +111,8 @@ def _get(table: Mapping[str, Any], name: str, key: str, default: T, kind: type) 
         return float(value)  # type: ignore[return-value]
     if not ok:
         raise ConfigError(f"[{name}] {key} must be of type {kind.__name__}")
+    if kind is float and not math.isfinite(value):
+        raise ConfigError(f"[{name}] {key} must be a finite number")
     return value  # type: ignore[no-any-return]
 
 
@@ -128,7 +131,7 @@ def _parse_detection(raw: Any) -> ld2451.DetectionParams:
     for key in sorted(keys - set(raw)):
         raise ConfigError(f"[radar.detection] {key} is required")
     direction = raw["direction"]
-    if direction not in _DIRECTIONS:
+    if not isinstance(direction, str) or direction not in _DIRECTIONS:
         raise ConfigError(f"[radar.detection] direction must be one of {sorted(_DIRECTIONS)}")
     ints: dict[str, int] = {}
     for key in ("max_distance_m", "min_speed_kmh", "no_target_delay_s"):
@@ -175,6 +178,9 @@ def parse_config(data: Mapping[str, Any]) -> Config:
     )
     if "recordings_dir" not in st:
         raise ConfigError("[storage] recordings_dir is required")
+    recordings_dir = _get(st, "storage", "recordings_dir", "", str)
+    if not recordings_dir or not Path(recordings_dir).is_absolute():
+        raise ConfigError("[storage] recordings_dir must be an absolute path")
     stop_mb = _get(st, "storage", "stop_below_mb", 1024, int)
     resume_mb = _get(st, "storage", "resume_above_mb", 1536, int)
     check_s = _get(st, "storage", "check_interval_s", 5.0, float)
@@ -184,7 +190,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         raise ConfigError("[storage] resume_above_mb must be > stop_below_mb")
     _positive("storage", "check_interval_s", check_s)
     storage = StorageConfig(
-        recordings_dir=Path(_get(st, "storage", "recordings_dir", "", str)),
+        recordings_dir=Path(recordings_dir),
         require_mountpoint=_get(st, "storage", "require_mountpoint", False, bool),
         stop_below_bytes=stop_mb * _MB,
         resume_above_bytes=resume_mb * _MB,
@@ -240,8 +246,8 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         raise ConfigError("[setup.geometry] must be a table")
     geometry: dict[str, float] = {}
     for key, val in geometry_raw.items():
-        if isinstance(val, bool) or not isinstance(val, (int, float)):
-            raise ConfigError(f"[setup.geometry] {key} must be a number")
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
+            raise ConfigError(f"[setup.geometry] {key} must be a finite number")
         geometry[str(key)] = float(val)
     setup = SetupConfig(notes=_get(su, "setup", "notes", "", str), geometry=geometry)
 
