@@ -24,8 +24,15 @@ uv run radar-cam-recorder run --fake --config my-dev.toml
 
 ### On the Pi
 
-Install uv from the `arm-unknown-linux-musleabihf` release into `~/.local/bin`, then
-build the environment against the system Python (do not use the development pin):
+Install uv (release 0.10.10, `arm-unknown-linux-musleabihf` build) into `~/.local/bin`,
+then build the environment against the system Python (do not use the development pin):
+
+```sh
+mkdir -p ~/.local/bin
+curl -sSfL https://github.com/astral-sh/uv/releases/download/0.10.10/uv-arm-unknown-linux-musleabihf.tar.gz | tar xz -C /tmp
+install -m 755 /tmp/uv-arm-unknown-linux-musleabihf/uv ~/.local/bin/uv
+uv --version
+```
 
 ```sh
 uv sync --python /usr/bin/python3
@@ -101,17 +108,20 @@ frame = session.frame_at(ts_ns)   # nearest video frame to a timestamp, or None
 
 ## Copying sessions
 
-Skip sessions that are still being written (`state` is `in_progress`):
+Skip sessions that are still being written (`state` is `in_progress`) or whose
+`session.json` is unreadable. The exclude list is built on the Pi by parsing the JSON:
 
 ```sh
-src=/home/bmendonca/recordings
-grep -l '"state": "in_progress"' "$src"/*/session.json \
-  | xargs -n1 dirname | xargs -n1 basename > /tmp/skip.txt
-rsync -av --exclude-from=/tmp/skip.txt pi@raspberrypi:"$src"/ ./recordings/
+PI=homegateway
+skip=$(mktemp)
+ssh "$PI" 'python3 -c "import json,pathlib
+for p in sorted(pathlib.Path.home().joinpath(\"recordings\").glob(\"*/session.json\")):
+    try:
+        if json.loads(p.read_text()).get(\"state\") == \"in_progress\": print(p.parent.name + \"/\")
+    except (OSError, ValueError): print(p.parent.name + \"/\")"' > "$skip"
+rsync -av --exclude-from="$skip" "$PI":recordings/ ./recordings/
+rm -f "$skip"
 ```
-
-Run the `grep` on the Pi (or over `ssh`) so the list reflects the Pi's sessions. If
-nothing is in progress, `grep` finds no files and `skip.txt` is empty, which is fine.
 
 ## Known limits
 
