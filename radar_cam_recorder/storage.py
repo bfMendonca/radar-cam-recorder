@@ -17,13 +17,16 @@ class StorageCheck:
 
 def check_storage(path: Path, require_mountpoint: bool) -> StorageCheck:
     """Say whether ``path`` may be written to; never creates or touches it."""
-    if not path.is_dir():
-        return StorageCheck(False, 0, "recordings dir missing")
-    free = shutil.disk_usage(path).free
-    if require_mountpoint and not os.path.ismount(path):
-        return StorageCheck(False, free, "recordings dir is not a mount point")
-    if not os.access(path, os.W_OK):
-        return StorageCheck(False, free, "recordings dir not writable")
+    try:
+        if not path.is_dir():
+            return StorageCheck(False, 0, "recordings dir missing")
+        free = shutil.disk_usage(path).free
+        if require_mountpoint and not os.path.ismount(path):
+            return StorageCheck(False, free, "recordings dir is not a mount point")
+        if not os.access(path, os.W_OK):
+            return StorageCheck(False, free, "recordings dir not writable")
+    except OSError as exc:
+        return StorageCheck(False, 0, f"recordings dir unavailable: {exc.strerror or exc}")
     return StorageCheck(True, free, "")
 
 

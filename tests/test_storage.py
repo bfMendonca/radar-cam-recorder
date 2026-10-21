@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -51,6 +53,17 @@ def test_not_a_mount_point(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 def test_mount_point_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os.path, "ismount", lambda _p: True)
     assert check_storage(tmp_path, require_mountpoint=True).usable
+
+
+def test_disk_usage_oserror_is_unusable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(_p: object) -> None:
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(shutil, "disk_usage", boom)
+    result = check_storage(tmp_path, require_mountpoint=False)
+    assert result.usable is False
+    assert result.free_bytes == 0
+    assert result.reason == "recordings dir unavailable: Input/output error"
 
 
 def test_disk_policy_hysteresis() -> None:
