@@ -140,15 +140,20 @@ The recorder starts **idle** (running, not recording) on every start; set
 
 **Behaviour change:** earlier versions recorded as soon as the service started. After
 upgrading, an unattended install stays idle and records nothing until a double press (or
-`USR2`). To record at start again, add this new table to `/etc/radar-cam-recorder.toml`
-(the file has no `[control]` table unless you added one) and restart the service:
+`USR2`). To record at start again, edit `/etc/radar-cam-recorder.toml`. If the file already
+has a `[control]` table (a copy of `deploy/config.example.toml` does), set `start_mode` inside
+it; a second `[control]` table is invalid TOML and the service would fail to load its config.
+If there is none, add this table:
 
 ```toml
 [control]
 start_mode = "record"
 ```
 
+Validate, then restart the service:
+
 ```sh
+radar-cam-recorder check-config --config /etc/radar-cam-recorder.toml
 sudo systemctl restart radar-cam-recorder
 ```
 
