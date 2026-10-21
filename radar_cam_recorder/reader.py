@@ -82,8 +82,10 @@ class RecordedSession:
 
     def radar_reports(self) -> Iterator[ld2451.RadarReport]:
         radar_dir = self.path / "radar"
+        # One decoder for the whole session: a report split across a rotation is kept.
+        decoder = ld2451.FrameDecoder()
         for segment in _segment_indexes(radar_dir, ".csv"):
-            yield from self._segment_reports(radar_dir / f"{segment:04d}.csv")
+            yield from self._segment_reports(radar_dir / f"{segment:04d}.csv", decoder)
 
     def timeline(self) -> Iterator[Frame | ld2451.RadarReport]:
         latency = self._latency_ns()
@@ -163,10 +165,14 @@ class RecordedSession:
                         stamps.append((int(row["index"]), int(row["sensor_ts_ns"])))
                     except (KeyError, TypeError, ValueError):
                         continue  # damaged row
-        elif meta_path.exists():
+        if meta_path.exists():
+            # The CSV is derived from the metadata; one with fewer rows is stale or partial.
             text = meta_path.read_text(encoding="utf-8", errors="replace")
             ts = [o["SensorTimestamp"] for o in parse_metadata(text) if "SensorTimestamp" in o]
-            stamps = list(enumerate(ts))
+            if len(ts) > len(stamps):
+                if csv_path.exists():
+                    log.warning("%s has fewer frames than its metadata, using that", csv_path)
+                stamps = list(enumerate(ts))
         return [Frame(segment, i, t, video) for i, t in stamps]
 
     def _sorted_frames(self) -> list[Frame]:
@@ -201,15 +207,14 @@ class RecordedSession:
         return DEFAULT_FRAME_INTERVAL_NS
 
     @staticmethod
-    def _segment_reports(path: Path) -> Iterator[ld2451.RadarReport]:
-        decoder = ld2451.FrameDecoder()
+    def _segment_reports(path: Path, decoder: ld2451.FrameDecoder) -> Iterator[ld2451.RadarReport]:
         with open(path, encoding="ascii", errors="replace") as fh:
             for lineno, line in enumerate(fh, 1):
                 try:
                     record = parse_line(line)
                 except ValueError:
-                    log.warning("%s:%d: garbled radar line, ignoring the rest", path, lineno)
-                    return
+                    log.warning("%s:%d: garbled radar line, skipped", path, lineno)
+                    continue
                 if record is None:
                     continue
                 t_rx_ns, data = record

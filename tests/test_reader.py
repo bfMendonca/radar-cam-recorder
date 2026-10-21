@@ -195,3 +195,54 @@ def test_mean_fps_zero_with_fewer_than_two_frames(tmp_path: Path) -> None:
     summary = open_session(tmp_path).summary()
     assert summary["frames"] == 1
     assert summary["mean_fps"] == 0
+
+
+EMPTY_REPORT = "f4f3f2f10000f8f7f6f5"
+FRAMES_HEADER = "index,sensor_ts_ns,frame_wall_clock_us,exposure_us,lux\n"
+
+
+def synthetic_session(root: Path) -> Path:
+    (root / "radar").mkdir()
+    (root / "video").mkdir()
+    (root / "session.json").write_text(json.dumps({"format_version": 1, "state": "complete"}))
+    return root
+
+
+def test_report_split_across_segments_is_kept(tmp_path: Path) -> None:
+    root = synthetic_session(tmp_path)
+    (root / "radar" / "0000.csv").write_text(f"t_rx_ns,hex\n1000,{EMPTY_REPORT}\n2000,f4\n")
+    (root / "radar" / "0001.csv").write_text(
+        f"t_rx_ns,hex\n2001,{EMPTY_REPORT[2:]}\n3000,{EMPTY_REPORT}\n"
+    )
+    stamps = [r.t_rx_ns for r in open_session(root).radar_reports()]
+    assert len(stamps) == 3
+    assert stamps[0] == 1000 and stamps[-1] == 3000
+
+
+def test_garbled_radar_line_skips_only_that_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    root = synthetic_session(tmp_path)
+    (root / "radar" / "0000.csv").write_text(
+        f"t_rx_ns,hex\n1000,{EMPTY_REPORT}\n1500,zz-not-hex\n3000,{EMPTY_REPORT}\n"
+    )
+    stamps = [r.t_rx_ns for r in open_session(root).radar_reports()]
+    assert stamps == [1000, 3000]
+    assert "0000.csv:3: garbled radar line" in caplog.text
+
+
+def test_meta_with_more_frames_than_stale_csv_wins(tmp_path: Path) -> None:
+    root = synthetic_session(tmp_path)
+    (root / "video" / "0000.frames.csv").write_text(FRAMES_HEADER)  # stale, 0 rows
+    (root / "video" / "0000.meta.json").write_text(
+        '[\n{"SensorTimestamp": 10},\n{"SensorTimestamp": 50},\n{"SensorTimestamp": 9'
+    )
+    (root / "video" / "0001.frames.csv").write_text(FRAMES_HEADER + "0,100,,,\n1,140,,,\n")
+    (root / "video" / "0001.meta.json").write_text('[\n{"SensorTimestamp": 100}')  # CSV wins
+    frames = list(open_session(root).frames())
+    assert [(f.segment, f.index, f.sensor_ts_ns) for f in frames] == [
+        (0, 0, 10),
+        (0, 1, 50),
+        (1, 0, 100),
+        (1, 1, 140),
+    ]
