@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import threading
 import time
@@ -18,7 +19,7 @@ from radar_cam_recorder.camera.rpicam import RpicamCamera
 from radar_cam_recorder.clocks import ClockSample
 from radar_cam_recorder.config import Config, parse_config
 from radar_cam_recorder.fakes import fake_radar_transport
-from radar_cam_recorder.radar import RadarStream
+from radar_cam_recorder.radar import RadarInfo, RadarStream, SegmentedRadarWriter
 from radar_cam_recorder.session import SegmentPaths, SessionStore
 from radar_cam_recorder.status import State, StatusBus, StatusEvent
 from radar_cam_recorder.storage import StorageCheck
@@ -262,6 +263,29 @@ def test_shutdown_before_any_session(tmp_path: Path) -> None:
     assert rig.sup.session is None
     assert list(tmp_path.iterdir()) == []
     assert rig.bus.current.state is State.STOPPED
+
+
+class FailingRadar(RadarStream):
+    def start(self, writer: SegmentedRadarWriter) -> RadarInfo:
+        raise OSError(errno.ENOENT, "no such device")
+
+
+def test_shutdown_after_radar_start_fails(tmp_path: Path) -> None:
+    cfg = make_cfg(tmp_path)
+    clock = lambda: 0  # noqa: E731
+    bus = StatusBus(clock)
+    sup = Supervisor(
+        cfg, bus=bus, camera=FakeCamera(clock), radar=FailingRadar(cfg.radar), clock=clock
+    )
+    with pytest.raises(OSError):
+        sup.tick()  # the failure policy is Task 9's
+    sup.shutdown()
+    assert sup.session is not None
+    data = read_json(sup.session.path / "session.json")
+    assert data["state"] == "complete"
+    assert data["segments"][0]["index"] == 0
+    assert sup._writer._recorder is None  # radar file closed
+    assert bus.current.state is State.STOPPED
 
 
 def test_shutdown_with_camera_ignoring_sigint(

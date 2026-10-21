@@ -97,7 +97,11 @@ class Supervisor:
             self._writer.flush()
 
     def shutdown(self, reason: str = "stopped by signal") -> None:
-        """Stop in order (spec 6.3); idempotent, bounded and never raises."""
+        """Stop in order (spec 6.3); idempotent, bounded and never raises.
+
+        Must not run concurrently with :meth:`tick`: signal handlers set the stop event and
+        :meth:`run` calls this after the current tick.
+        """
         with self._shutdown_lock:
             if self._shut_down:
                 return
@@ -134,6 +138,9 @@ class Supervisor:
         )
         self._session = session
         segment = session.segment(0)
+        # Set before any device starts, so a failed start still leaves a closable session.
+        self._segment = segment
+        self._segment_start_ns = now
         devices: dict[str, Any] = {"radar": None, "camera": None}
         if self._radar is not None:
             self._writer.open(segment.radar)
@@ -199,17 +206,19 @@ class Supervisor:
     def _close_session(self, state: SessionState, reason: str) -> None:
         """Close everything in spec 6.3 order; a failing step is logged and the rest still run."""
         session, segment = self._session, self._segment
-        assert session is not None and segment is not None
+        if session is None:
+            return
         frames = _attempt("stop camera", self._stop_camera, 0)
         if self._radar is not None:
             _attempt("stop radar", self._radar.stop, None)
         _attempt("close radar file", self._writer.close, None)
         end = self._clock()
-        _attempt(
-            "record last segment",
-            lambda: session.add_segment(segment.index, self._segment_start_ns, end, frames),
-            None,
-        )
+        if segment is not None:
+            _attempt(
+                "record last segment",
+                lambda: session.add_segment(segment.index, self._segment_start_ns, end, frames),
+                None,
+            )
         session.close(state, reason, sample_clocks(boot=self._clock))
 
 
