@@ -46,14 +46,24 @@ class GestureClassifier:
         self._pressed = False
         self._last_ns: int | None = None  # last accepted transition
         self._down_ns = 0
+        self._pending: tuple[bool, int] | None = None  # debounced-away raw level, time
         self._deadline: int | None = None  # deadline for _WAIT / _LOCK (button up)
 
     def feed(self, pressed: bool, t_ns: int) -> list[Gesture]:
         out = self.poll(t_ns)
         if pressed == self._pressed:
+            self._pending = None  # raw level returned to the accepted one: it was a bounce
             return out
         if self._last_ns is not None and t_ns - self._last_ns < self._debounce_ns:
+            # Too soon after the last accepted transition: remember the latest raw level so
+            # that, once stable for debounce_s, it still wins (a release is never lost).
+            self._pending = (pressed, t_ns)
             return out
+        self._pending = None
+        self._apply(pressed, t_ns, out)
+        return out
+
+    def _apply(self, pressed: bool, t_ns: int, out: list[Gesture]) -> None:
         self._last_ns = t_ns
         self._pressed = pressed
         if pressed:
@@ -77,10 +87,14 @@ class GestureClassifier:
                 self._state = _IDLE
             elif self._state == _LOCK:
                 self._deadline = t_ns + self._double_ns
-        return out
 
     def poll(self, t_ns: int) -> list[Gesture]:
         out: list[Gesture] = []
+        if self._pending is not None:
+            level, at_ns = self._pending
+            if t_ns - at_ns >= self._debounce_ns:
+                self._pending = None
+                self._apply(level, at_ns, out)
         if self._state == _DOWN and t_ns - self._down_ns >= self._long_ns:
             self._state = _LONG
             out.append(Gesture.LONG_ARMED)
@@ -95,10 +109,15 @@ class GestureClassifier:
 
     def next_deadline_ns(self) -> int | None:
         if self._state == _DOWN:
-            return self._down_ns + self._long_ns
-        if self._state in (_WAIT, _LOCK):
-            return self._deadline
-        return None
+            main: int | None = self._down_ns + self._long_ns
+        elif self._state in (_WAIT, _LOCK):
+            main = self._deadline
+        else:
+            main = None
+        if self._pending is not None:
+            settle = self._pending[1] + self._debounce_ns
+            return settle if main is None else min(main, settle)
+        return main
 
 
 def find_button(name: str, sys_input: Path = Path("/sys/class/input")) -> Path | None:

@@ -88,6 +88,15 @@ def test_late_second_press_yields_single_then_new_sequence() -> None:
     assert c.poll(1200 * ms) == [Gesture.SINGLE]
 
 
+def test_release_inside_debounce_is_not_lost() -> None:
+    c = make()
+    c.feed(True, 0)
+    c.feed(False, 20 * ms)
+    assert c.next_deadline_ns() == 50 * ms
+    assert c.poll(6000 * ms) == [Gesture.SINGLE]
+    assert c.poll(12000 * ms) == []
+
+
 def ev(etype: int, code: int, value: int) -> bytes:
     return struct.pack("llHHi", 0, 0, etype, code, value)
 
@@ -96,14 +105,15 @@ def test_reader_parses_events() -> None:
     r, w = os.pipe()
     now = [0]
     got: list[Gesture] = []
-    reader = ButtonReader(Path("unused"), make(), got.append, lambda: now[0], fd=r)
+    clf = make()
+    reader = ButtonReader(Path("unused"), clf, got.append, lambda: now[0], fd=r)
     reader.start()
     try:
         os.write(w, ev(EV_KEY, KEY_POWER, 1) + ev(EV_SYN, 0, 0) + ev(EV_KEY, KEY_POWER, 2))
-        time.sleep(0.05)
+        wait_until(lambda: clf.next_deadline_ns() == 5000 * ms)
         now[0] = 100 * ms
         os.write(w, ev(EV_KEY, KEY_POWER, 0) + ev(EV_SYN, 0, 0))
-        time.sleep(0.05)
+        wait_until(lambda: clf.next_deadline_ns() == 500 * ms)
         now[0] = 600 * ms
         os.write(w, ev(EV_SYN, 0, 0))  # wake the select; poll sees the clock
         wait_until(lambda: got == [Gesture.SINGLE])
@@ -117,13 +127,14 @@ def test_reader_handles_split_event_and_stops_promptly() -> None:
     r, w = os.pipe()
     now = [0]
     got: list[Gesture] = []
-    reader = ButtonReader(Path("unused"), make(), got.append, lambda: now[0], fd=r)
+    clf = make()
+    reader = ButtonReader(Path("unused"), clf, got.append, lambda: now[0], fd=r)
     reader.start()
     data = ev(EV_KEY, KEY_POWER, 1)
     os.write(w, data[:5])
     time.sleep(0.02)
     os.write(w, data[5:])
-    time.sleep(0.05)
+    wait_until(lambda: clf.next_deadline_ns() == 5000 * ms)
     now[0] = 5000 * ms
     os.write(w, ev(EV_SYN, 0, 0))
     wait_until(lambda: got == [Gesture.LONG_ARMED])
