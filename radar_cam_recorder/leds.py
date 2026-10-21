@@ -207,10 +207,12 @@ class LedController:
 
     def flash(self, kind: str) -> None:
         with self._lock:
+            hold = self._flash_delay
             if kind == "accepted":
                 self._overlay = {"green": Pattern.ON, "red": Pattern.ON}
             elif kind == "rejected":
                 self._overlay = {"red": Pattern.BLINK_2}
+                hold = 3 * self._flash_delay  # on, off, on: two blinks
             elif kind == "long_armed":
                 self._overlay = {"red": Pattern.FAST_BLINK}
                 self._sticky = True
@@ -222,7 +224,7 @@ class LedController:
                 self._timer.cancel()
                 self._timer = None
             if not self._sticky:
-                timer = threading.Timer(self._flash_delay, self._restore)
+                timer = threading.Timer(hold, self._restore)
                 timer.daemon = True
                 self._timer = timer
                 timer.start()
