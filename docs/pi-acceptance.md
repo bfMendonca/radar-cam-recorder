@@ -6,7 +6,7 @@ Target: Raspberry Pi Zero W (ARMv6), Raspbian 12, system Python 3.11.2, OV5647 c
 `[setup] notes = "acceptance run 2026-10-20, indoor"`. Recordings went to
 `/home/bmendonca/recordings`. Branch `feat/recorder-v1`.
 
-Summary: acceptance 1, 2, 3, 5, 6 and the SIGKILL half of 4 pass. Acceptance 7 and the
+Summary (2026-10-20 run; the LEDs and button acceptance is at the end of this file): acceptance 1, 2, 3, 5, 6 and the SIGKILL half of 4 pass. Acceptance 7 and the
 power-cut half of 4 are pending (need physical access). Step 2 (Pi test suite, expected 0
 failures) was UNMET on the original run (1 failed + 2 errors, timing-only) and is resolved
 by the re-run after the R29 fixes (133 passed). The camera-stall finding is fixed in code (R28) and was
@@ -462,8 +462,8 @@ and `journalctl -u radar-cam-recorder -f` over SSH while you test.
 3. Single press while recording: the session closes `complete` and a new one opens; run the
    README `rsync` copy command while recording continues and check the closed session arrives.
 4. Long press, 5 s, with the recorder frozen (`sudo systemctl kill --kill-whom=main -s STOP
-   radar-cam-recorder`). The red LED fast-blinks once past 5 s? (only when the recorder runs;
-   frozen, it cannot). Expected: the Pi powers off (logind), the LEDs go dark (to confirm that
+   radar-cam-recorder`). (The red fast blink after 5 s appears only when the recorder runs;
+   frozen, it cannot.) Expected: the Pi powers off (logind), the LEDs go dark (to confirm that
    `gpio-leds` turns them off at halt, R8), and then one press on the button powers it back on
    (wake from halt on GPIO 3). Also time the hold: logind's threshold is 5 s from memory.
    Repeat once with the recorder healthy: red fast blink after 5 s, then poweroff.
