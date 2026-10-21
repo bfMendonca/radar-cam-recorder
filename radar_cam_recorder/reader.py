@@ -112,7 +112,7 @@ class RecordedSession:
         both = frame_ts + radar_ts
         duration = (max(both) - min(both)) / NS if both else 0.0
         span = (frame_ts[-1] - frame_ts[0]) / NS if len(frame_ts) >= 2 else 0.0
-        mean_fps = len(frame_ts) / span if span > 0 else 0.0
+        mean_fps = (len(frame_ts) - 1) / span if span > 0 else 0.0
         deltas = [b - a for a, b in zip(frame_ts, frame_ts[1:])]
         gaps = 0
         if deltas:

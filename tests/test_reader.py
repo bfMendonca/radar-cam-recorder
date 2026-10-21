@@ -170,7 +170,28 @@ def test_gaps_and_frame_at_tolerance_from_synthetic_session(tmp_path: Path) -> N
     summary = session.summary()
     assert summary["gaps"] == 1
     assert summary["frames"] == 5
+    assert summary["mean_fps"] == pytest.approx(4 / 0.44)
+    assert set(summary) == {
+        "state",
+        "duration_s",
+        "frames",
+        "mean_fps",
+        "gaps",
+        "radar_reports",
+        "overlap_s",
+    }
     assert summary["overlap_s"] == 0
     found = session.frame_at(60 * ms)
     assert found is not None and found.index in (1, 2)
     assert session.frame_at(200 * ms) is None
+
+
+def test_mean_fps_zero_with_fewer_than_two_frames(tmp_path: Path) -> None:
+    (tmp_path / "video").mkdir()
+    (tmp_path / "session.json").write_text(json.dumps({"format_version": 1, "state": "complete"}))
+    (tmp_path / "video" / "0000.frames.csv").write_text(
+        "index,sensor_ts_ns,frame_wall_clock_us,exposure_us,lux\n0,5,,,\n"
+    )
+    summary = open_session(tmp_path).summary()
+    assert summary["frames"] == 1
+    assert summary["mean_fps"] == 0
