@@ -166,13 +166,16 @@ def test_recovery_generates_missing_frames_csv(tmp_path: Path) -> None:
     assert s1.frames.read_text() == "existing"
 
 
-def test_recovery_without_writer_skips_frames(tmp_path: Path) -> None:
+def test_recovery_default_writer_derives_frames_csv(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     crashed = store.create({}, "b", SAMPLE)
     seg = crashed.segment(0)
-    seg.meta.write_text("{}")
+    seg.meta.write_text('[\n{"SensorTimestamp": 5, "ExposureTime": 7},\n{"SensorTimestamp": 9, "Lu')
     store.recover_interrupted()
-    assert not seg.frames.exists()
+    assert seg.frames.read_text().splitlines() == [
+        "index,sensor_ts_ns,frame_wall_clock_us,exposure_us,lux",
+        "0,5,,7,",
+    ]
 
 
 def test_recovery_skips_unreadable_session_json(

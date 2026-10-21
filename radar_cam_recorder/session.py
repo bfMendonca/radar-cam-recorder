@@ -170,7 +170,15 @@ class SessionStore:
         return session
 
     def recover_interrupted(self, frames_writer: FramesWriter | None = None) -> list[str]:
-        """Mark every ``in_progress`` session ``interrupted``; data files are never modified."""
+        """Mark every ``in_progress`` session ``interrupted``.
+
+        Missing ``frames.csv`` files are derived from the metadata (default: ``write_frames_csv``);
+        recorded data files are never modified.
+        """
+        if frames_writer is None:
+            from radar_cam_recorder.camera.metadata import write_frames_csv
+
+            frames_writer = write_frames_csv
         marked: list[str] = []
         for child in sorted(self.root.iterdir()):
             session_file = child / SESSION_FILE
@@ -185,8 +193,7 @@ class SessionStore:
                 continue
             if data.get("state") != SessionState.IN_PROGRESS.value:
                 continue
-            if frames_writer is not None:
-                _write_missing_frames(child, frames_writer)
+            _write_missing_frames(child, frames_writer)
             data["state"] = SessionState.INTERRUPTED.value
             data["stop_reason"] = INTERRUPTED_REASON
             data["last_radar_t_rx_ns"] = _last_radar_t_rx_ns(child)
