@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import logging
 import threading
 import time
 from pathlib import Path
@@ -164,3 +166,26 @@ def test_open_failure_propagates() -> None:
     with pytest.raises(ld2451.TransportError):
         stream.start(SegmentedRadarWriter())
     assert not stream.running
+
+
+def test_write_errors_are_kept_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def full(self: ld2451.Recorder, t_rx_ns: int, data: bytes) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    writer = SegmentedRadarWriter()
+    writer.open(tmp_path / "r.csv")
+    monkeypatch.setattr(ld2451.Recorder, "write", full)
+    with caplog.at_level(logging.WARNING, logger="radar_cam_recorder"):
+        writer.write(10, b"\x01")
+        writer.write(20, b"\x01")
+    writer.close()
+    assert writer.write_errors == 2
+    assert writer.reads == 0
+    assert writer.last_rx_ns == 20
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+    error = writer.take_error()
+    assert error is not None
+    assert error.errno == errno.ENOSPC
+    assert writer.take_error() is None

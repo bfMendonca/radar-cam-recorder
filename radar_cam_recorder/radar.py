@@ -39,6 +39,20 @@ class SegmentedRadarWriter:
         self._recorder: ld2451.Recorder | None = None
         self._last_rx_ns: int | None = None
         self._reads = 0
+        self._error: OSError | None = None
+        self._write_errors = 0
+        self._failing = False
+
+    @property
+    def write_errors(self) -> int:
+        """Total writes that failed with OSError."""
+        return self._write_errors
+
+    def take_error(self) -> OSError | None:
+        """Return the first stored write error (since the last call) and clear it."""
+        with self._lock:
+            error, self._error = self._error, None
+            return error
 
     @property
     def last_rx_ns(self) -> int | None:
@@ -64,7 +78,18 @@ class SegmentedRadarWriter:
             self._last_rx_ns = t_rx_ns
             if self._recorder is None or not data:
                 return
-            self._recorder.write(t_rx_ns, data)
+            try:
+                self._recorder.write(t_rx_ns, data)
+            except OSError as exc:
+                # The driver only logs listener errors; keep it for the supervisor instead.
+                self._write_errors += 1
+                if self._error is None:
+                    self._error = exc
+                if not self._failing:
+                    self._failing = True
+                    log.warning("radar write failed: %s", exc)
+                return
+            self._failing = False
             self._reads += 1
 
     def flush(self) -> None:
