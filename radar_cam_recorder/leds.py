@@ -97,10 +97,13 @@ class SysfsLed:
         name: str,
         root: Path = Path("/sys/class/leds"),
         sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._name = name
         self._dir = root / name
         self._sleep = sleep
+        self._monotonic = monotonic
+        self._switched_at = 0.0
         self._lock = threading.Lock()
         self._last: Pattern | None = None
         self._trigger: str | None = None
@@ -140,6 +143,7 @@ class SysfsLed:
         if self._trigger != value:
             self._write("trigger", value)
             self._trigger = value
+            self._switched_at = self._monotonic()
 
     def _steady(self, level: str) -> None:
         self._set_trigger("none")
@@ -156,13 +160,14 @@ class SysfsLed:
 
     def _write_retry(self, fname: str, value: str) -> None:
         # udev makes pattern/repeat group-writable asynchronously after the trigger switch.
-        deadline = time.monotonic() + RETRY_SECONDS
+        # Only within RETRY_SECONDS of this LED's own trigger switch; later denials fail at once.
+        deadline = self._switched_at + RETRY_SECONDS
         while True:
             try:
                 self._write(fname, value)
                 return
             except PermissionError:
-                if time.monotonic() >= deadline:
+                if self._monotonic() >= deadline:
                     raise
                 self._sleep(0.02)
 
@@ -207,6 +212,9 @@ class LedController:
 
     def flash(self, kind: str) -> None:
         with self._lock:
+            if self._sticky:
+                # long_armed lasts until the process ends; green keeps following the state.
+                return
             hold = self._flash_delay
             if kind == "accepted":
                 self._overlay = {"green": Pattern.ON, "red": Pattern.ON}

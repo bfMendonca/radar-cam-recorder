@@ -194,3 +194,45 @@ def test_led_sink() -> None:
     ctl, green, red, _ = make()
     LedSink(ctl).handle(event(State.ERROR, "e"))
     assert (green.shown[-1], red.shown[-1]) == (P.OFF, P.ON)
+
+
+def test_flash_ignored_after_long_armed() -> None:
+    ctl, green, red, _ = make(delay=0.01)
+    ctl.show_state(event(State.RECORDING))
+    ctl.flash("long_armed")
+    ctl.flash("accepted")
+    ctl.flash("rejected")
+    threading.Event().wait(0.1)
+    assert red.shown[-1] == P.FAST_BLINK
+    assert P.ON not in red.shown
+    assert P.ON not in green.shown
+    ctl.show_state(event(State.IDLE))
+    assert (green.shown[-1], red.shown[-1]) == (P.ON, P.FAST_BLINK)
+
+
+def test_sysfs_denied_retries_only_after_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    led(tmp_path, "rcr-red")
+    now = {"t": 100.0}
+    sleeps: list[float] = []
+
+    def sleep(s: float) -> None:
+        sleeps.append(s)
+        now["t"] += s
+
+    out = SysfsLed("rcr-red", tmp_path, sleep=sleep, monotonic=lambda: now["t"])
+    real = Path.write_text
+
+    def denied(self: Path, data: str, *a: Any, **k: Any) -> int:
+        if self.name in ("pattern", "repeat"):
+            raise PermissionError(13, "denied")
+        return real(self, data, *a, **k)
+
+    monkeypatch.setattr(Path, "write_text", denied)
+    out.show(P.FAST_BLINK)
+    first = len(sleeps)
+    assert 0 < first <= 60  # bounded, about 1 s of polling
+    out.pulse()
+    out.show(P.SLOW_BLINK)
+    assert len(sleeps) == first  # later calls fail immediately
