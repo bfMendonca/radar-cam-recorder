@@ -101,12 +101,20 @@ Each run creates `recordings_dir/sNNNNNN/` containing:
 
 - `session.json`: metadata, devices, clock samples and `state` (`in_progress`,
   `complete`, `interrupted`, ...);
-- `events.jsonl`: state changes and incidents;
+- `events.jsonl`: state changes and incidents (`camera exited`, `camera stalled`,
+  `segment gap`, `frame drops`, `radar silent`, ...);
 - per segment: the H.264 video, a CSV of per-frame sensor timestamps, and the raw radar
   capture (`t_rx_ns,hex` lines).
 
-All timestamps are on the boot-relative monotonic clock. A session left `in_progress`
-by a crash or power cut is closed on the next start.
+Each closed segment in `session.json` also records `drops` (frame intervals longer than
+1.5 frame periods) and `max_gap_ns` (its longest frame interval).
+
+Timestamps: the radar's `t_rx_ns` is `CLOCK_BOOTTIME`, read by the recorder when the
+bytes arrive. The camera's `SensorTimestamp` is the kernel's frame timestamp; on a Pi,
+which never suspends, it equals `CLOCK_BOOTTIME`, and the clock samples in
+`session.json` (boot, monotonic and wall clock read together) allow a correction if
+that ever differs. A session left `in_progress` by a crash or power cut is marked
+`interrupted` once the recordings dir is usable again (before the next session opens).
 
 ## Reading sessions
 
@@ -120,6 +128,10 @@ for item in session.timeline():   # video frames and radar reports in time order
     ...
 frame = session.frame_at(ts_ns)   # nearest video frame to a timestamp, or None
 ```
+
+`timeline()` already shifts radar reports by `radar_latency_ns`; `frame_at()` does not,
+so for a radar report pass
+`report.t_rx_ns - session.metadata["radar_latency_ns"]`.
 
 ## Copying sessions
 
@@ -140,7 +152,11 @@ rm -f "$skip"
 
 ## Known limits
 
-- Each segment rotation leaves a 1-2 s gap in the video.
+- Each segment rotation leaves a gap of about 3 s in the video (`segment gap` incident):
+  measured on the Pi over 26 rotations of 300 s segments, 2.5-3.8 s, median 3.0 s. It is
+  the time `rpicam-vid` takes to stop and to deliver the first frame of the next run.
+- In-segment frame drops are normal at the default 1296x972@25 (about 300 per 300 s
+  segment, longest usually 0.1-1 s): one `frame drops` incident per segment.
 - Right after boot the camera stack needs about 10 s: expect one `camera exited` (or
   `camera stalled`) incident and a short `degraded` spell before recording settles.
 - Video and radar are aligned to about 50 ms.

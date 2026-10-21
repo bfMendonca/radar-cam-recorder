@@ -362,9 +362,10 @@ watchdog hardware check was a remote item and is done (see finding 1).
 
 7 (pending, needs physical access): with the service recording, pull the radar's 5 V
 wire. Expected within about 5 s: `radar-cam-recorder status --config
-/etc/radar-cam-recorder.toml` shows `degraded` / `radar missing`, and an incident in the
-session's `events.jsonl`. Plug it back in: status returns to `recording`. Check with
-`journalctl -u radar-cam-recorder -f`.
+/etc/radar-cam-recorder.toml` shows `degraded` / `radar missing`, and the session's
+`events.jsonl` gets a state event (`degraded`, `radar missing`) and one `radar silent`
+incident (`silent_s` about 5) for the whole outage. Plug it back in: status returns to
+`recording`. Check with `journalctl -u radar-cam-recorder -f`.
 
 4 (power-cut half, pending, needs physical access): while recording, pull the Pi's power.
 After boot, `journalctl -u radar-cam-recorder -b` and `radar-cam-recorder status` should
