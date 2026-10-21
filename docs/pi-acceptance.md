@@ -9,12 +9,13 @@ Target: Raspberry Pi Zero W (ARMv6), Raspbian 12, system Python 3.11.2, OV5647 c
 Summary: acceptance 1, 2, 3, 5, 6 and the SIGKILL half of 4 pass. Acceptance 7 and the
 power-cut half of 4 are pending (need physical access). Step 2 (Pi test suite, expected 0
 failures) was UNMET on the original run (1 failed + 2 errors, timing-only) and is resolved
-by the re-run after the R29 fixes (133 passed). The camera-stall finding is fixed (R28).
+by the re-run after the R29 fixes (133 passed). The camera-stall finding is fixed in code (R28) and was
+verified on hardware with a forced stall.
 Camera default 1296x972 is PROVISIONAL (R32).
 
 ## Findings (not patched, library code untouched)
 
-1. **Camera stall is not detected (acceptance 2 / robustness). FIXED by R28 (commit d3790d5).** Twice out of about eight
+1. **Camera stall is not detected (acceptance 2 / robustness). FIXED IN CODE by R28 (commit d3790d5), verified on hardware (below).** Twice out of about eight
    `rpicam-vid` starts the camera process stayed alive but stopped delivering frames, and
    the recorder kept reporting `recording` with no incident:
    - Boot session `s000002`, segment 1 (03:28:09, right after the first rotation): 39
@@ -32,11 +33,35 @@ Camera default 1296x972 is PROVISIONAL (R32).
    **Resolution:** R28 added `[camera] stall_timeout_s` (default 10.0): if the segment's
    meta file does not grow for that long (grace of one timeout after a start), the
    recorder logs a `camera stalled` incident, stops the run, and treats it as a camera
-   failure (degraded `camera missing`, backoff, new segment if video was left). Deploy
-   evidence: the Pi was synced with the fix, `stall_timeout_s = 10.0` is in
-   `/etc/radar-cam-recorder.toml` (backup `/etc/radar-cam-recorder.toml.bak`), and the Pi
-   suite passes with the new watchdog tests (133 passed, see Step 2). No stall has been
-   re-observed on hardware since; the new tests cover it with a manual camera.
+   failure (degraded `camera missing`, backoff, new segment if video was left). Covered by
+   unit tests (a fake camera run that stays alive without writing frames); deployed to the
+   Pi with `stall_timeout_s = 10.0` in `/etc/radar-cam-recorder.toml` (backup
+   `/etc/radar-cam-recorder.toml.bak`) and the service recording afterwards. No natural
+   stall was re-observed, so the hardware check was forced (below).
+   **Order of results:** the Step 3 measurement and the Step 5-9 acceptance results in
+   this document were all recorded BEFORE the R28-R30 deploy, on pre-fix code. Only the
+   Step 2 re-run and the watchdog check below ran on the fixed code.
+   **Hardware check of the watchdog (after the deploy, service recording):**
+
+   ```
+   sudo pkill -STOP -x rpicam-vid          # freeze the camera process, 04:29:19
+   # poll: radar-cam-recorder status --config /etc/radar-cam-recorder.toml every 3 s
+   sudo pkill -CONT -x rpicam-vid          # 04:30:00 (always sent; also in a trap)
+   journalctl -u radar-cam-recorder --since "2026-10-21 04:29:14"
+   ```
+
+   ```
+   04:29:30 WARNING incident: recording (camera stalled) {'segment': 3, 'stalled_s': 10.035829059}
+   04:29:36 INFO    state: degraded (camera missing)
+   04:29:37 INFO    state: recording (recording)
+   04:29:39 WARNING incident: recording (segment gap) {'segment': 4, 'gap_ns': 19390101000}
+   ```
+
+   Result: PASS. The stall was detected 10.04 s after the incident clock started, one
+   incident, degraded after the frozen process was stopped (it ignores SIGINT while frozen,
+   so it is killed after the stop timeout), then a new `rpicam-vid` (new pid) started a new
+   segment 4 and the state returned to `recording`. After `SIGCONT` the service stayed
+   `recording` (one `rpicam-vid`, pid 10494).
 2. **Test suite timing on the Pi (Step 2 FAIL on the original run; fixed by R29):** 125 passed, 1 failed, 2 errors, all timing
    assumptions that are too tight for a Pi Zero (Python start-up of a subprocess takes
    over 1 s):
@@ -104,7 +129,14 @@ before the child installed its handler), not recorder behaviour (verified by han
 **Resolution (re-run after R29, commits af72e6f and d3790d5, per
 `task-12-fix-report.md`):** the Pi was re-synced with `UV_PYTHON=/usr/bin/python3
 ~/.local/bin/uv sync` (pure-Python hypothesis 6.141.1, nothing compiled) and the suite run
-there gives `133 passed` (0 failures), including the new stall-watchdog tests.
+there gives `133 passed` (0 failures), including the new stall-watchdog tests. Command
+and environment of the re-run (service recording at the time):
+
+```
+export UV_PYTHON=/usr/bin/python3
+cd ~/workspace/radar-cam-recorder && time timeout 1800 ~/.local/bin/uv run pytest -q
+-> 133 passed in 81.6 s
+```
 
 ## Step 3: camera modes (acceptance 8)
 
@@ -324,6 +356,9 @@ not exercised here. It was observed at the reboot (Step 5, boot of session `s000
 uptime in seconds from `events.jsonl`): degraded at 45.2 -> retry at 46.25 (1 s), degraded
 47.3 -> retry 49.3 (2 s), degraded 50.3 -> retry 54.4 (4 s), i.e. 1, 2, 4 s doubling, with a
 single `camera exited` incident for the streak.
+
+Pending list (summary): 7 and the power-cut half of 4 need physical access; the camera
+watchdog hardware check was a remote item and is done (see finding 1).
 
 7 (pending, needs physical access): with the service recording, pull the radar's 5 V
 wire. Expected within about 5 s: `radar-cam-recorder status --config
