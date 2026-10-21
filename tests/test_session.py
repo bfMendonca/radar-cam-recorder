@@ -253,3 +253,18 @@ def test_recovery_survives_unreadable_radar_file(
     data = read_json(crashed.path / "session.json")
     assert data["state"] == "interrupted"
     assert data["last_radar_t_rx_ns"] is None
+
+
+def test_recovery_regenerates_stale_frames_csv(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    crashed = store.create({}, "b", SAMPLE)
+    stale, current = crashed.segment(0), crashed.segment(1)
+    header = "index,sensor_ts_ns,frame_wall_clock_us,exposure_us,lux\n"
+    stale.frames.write_text(header)  # written by an earlier run of the reused segment
+    stale.meta.write_text('[\n{"SensorTimestamp": 5},\n{"SensorTimestamp": 9},\n{"Sens')
+    current.meta.write_text('[\n{"SensorTimestamp": 20}\n]\n')
+    current.frames.write_text(header + "0,20,,,\n")
+    current_before = current.frames.read_bytes()
+    store.recover_interrupted()
+    assert stale.frames.read_text().splitlines() == [header.strip(), "0,5,,,", "1,9,,,"]
+    assert current.frames.read_bytes() == current_before

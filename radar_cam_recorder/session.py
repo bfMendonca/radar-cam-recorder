@@ -177,8 +177,9 @@ class SessionStore:
     def recover_interrupted(self, frames_writer: FramesWriter | None = None) -> list[str]:
         """Mark every ``in_progress`` session ``interrupted``.
 
-        Missing ``frames.csv`` files are derived from the metadata (default: ``write_frames_csv``);
-        recorded data files are never modified.
+        Missing ``frames.csv`` files, and stale ones with fewer rows than the metadata has
+        frames, are derived from the metadata (default: ``write_frames_csv``); recorded data
+        files are never modified.
         """
         if frames_writer is None:
             from radar_cam_recorder.camera.metadata import write_frames_csv
@@ -237,12 +238,22 @@ def _write_missing_frames(session_dir: Path, frames_writer: FramesWriter) -> Non
     suffix = ".meta.json"
     for meta in sorted((session_dir / "video").glob(f"*{suffix}")):
         frames = meta.with_name(meta.name[: -len(suffix)] + ".frames.csv")
-        if frames.exists():
-            continue
         try:
+            if frames.exists() and not _frames_csv_stale(meta, frames):
+                continue
             frames_writer(meta, frames)
         except Exception as exc:
             log.warning("cannot write frames for %s: %s", meta, exc)
+
+
+def _frames_csv_stale(meta: Path, frames: Path) -> bool:
+    """True if ``frames`` has fewer rows than ``meta`` has frames (e.g. a reused segment)."""
+    from radar_cam_recorder.camera.metadata import parse_metadata
+
+    with open(frames, encoding="utf-8", errors="replace") as fh:
+        rows = max(0, sum(1 for line in fh if line.strip()) - 1)  # minus the header
+    text = meta.read_text(encoding="utf-8", errors="replace")
+    return sum(1 for obj in parse_metadata(text) if "SensorTimestamp" in obj) > rows
 
 
 def _last_radar_t_rx_ns(session_dir: Path) -> int | None:
