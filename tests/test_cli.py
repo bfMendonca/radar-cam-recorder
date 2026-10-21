@@ -42,11 +42,30 @@ def recorded(tmp_path_factory: pytest.TempPathFactory) -> Path:
         stderr=subprocess.PIPE,
         text=True,
     )
-    time.sleep(2.5)
-    proc.send_signal(signal.SIGTERM)
-    _, err = proc.communicate(timeout=15)
+    try:
+        # Python start-up alone takes seconds on a Pi Zero: wait for the recorder, not a clock.
+        deadline = time.monotonic() + 60
+        while _status_state(tmp_path / "status.json") != "recording":
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "recorder never reported recording"
+            time.sleep(0.1)
+        time.sleep(1.5)  # record a little
+        proc.send_signal(signal.SIGTERM)
+        _, err = proc.communicate(timeout=15)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
     assert proc.returncode == 0, err
     return cfg
+
+
+def _status_state(path: Path) -> str | None:
+    try:
+        state = json.loads(path.read_text())["state"]
+    except (OSError, ValueError, KeyError):
+        return None  # not written yet (or replaced mid-read)
+    return state if isinstance(state, str) else None
 
 
 def test_check_config_prints_json(capsys: pytest.CaptureFixture[str]) -> None:

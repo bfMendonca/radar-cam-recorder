@@ -20,7 +20,7 @@ classifiers = [
 radar-cam-recorder = "radar_cam_recorder.cli:main"
 
 [dependency-groups]
-test = ["pytest>=7", "hypothesis>=6"]
+test = ["pytest>=7", "hypothesis>=6.100,<6.142"]  # 6.142+ needs a Rust build on ARMv6
 dev = ["ruff>=0.5", "mypy>=1.10,<1.20", "pytest-cov>=4", "types-pyserial"]
 
 [tool.uv]

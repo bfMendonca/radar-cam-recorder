@@ -100,7 +100,7 @@ def test_rpicam_records_and_stops_cleanly(tmp_path: Path) -> None:
 def test_rpicam_exit1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FAKE_RPICAM_MODE", "exit1")
     run = RpicamCamera(make_cfg()).start(make_paths(tmp_path))
-    assert wait_for(lambda: not run.alive(), 0.5)
+    assert wait_for(lambda: not run.alive(), 5.0)  # Python start-up is slow on a Pi Zero
     assert run.returncode == 1
     assert "no cameras" in make_paths(tmp_path).camera_log.read_text()
     run.stop(1)  # safe on a dead run
