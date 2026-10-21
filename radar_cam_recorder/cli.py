@@ -10,10 +10,14 @@ import sys
 import threading
 from pathlib import Path
 from types import FrameType
+from typing import Any
 
+from radar_cam_recorder.button import ButtonReader, Gesture, GestureClassifier, find_button
 from radar_cam_recorder.camera.base import CameraSource
 from radar_cam_recorder.clocks import boot_clock
 from radar_cam_recorder.config import Config, ConfigError, config_to_dict, load_config
+from radar_cam_recorder.leds import LedController, LedSink, SysfsLed
+from radar_cam_recorder.notify import notify
 from radar_cam_recorder.radar import RadarStream
 from radar_cam_recorder.reader import open_session
 from radar_cam_recorder.status import LogSink, StatusBus, StatusFileSink
@@ -65,23 +69,85 @@ def _run(cfg: Config, fake: bool) -> int:
         if cfg.radar.enabled:
             radar = RadarStream(cfg.radar)
 
+    # Must be read before anything (the bus announce, StatusFileSink) rewrites the file.
+    unclean = previous_run_unclean(cfg.status_file)
     bus = StatusBus(clock)
     bus.add_sink(LogSink())
+    controller: LedController | None = None
+    if cfg.leds.enabled and not fake:
+        controller = LedController(SysfsLed(cfg.leds.green), SysfsLed(cfg.leds.red), clock)
+        bus.add_sink(LedSink(controller))
     bus.add_sink(StatusFileSink(cfg.status_file))
-    supervisor = Supervisor(cfg, bus=bus, camera=camera, radar=radar, clock=clock)
+
+    def on_command(command: str, accepted: bool) -> None:
+        if controller is not None:
+            controller.flash("accepted" if accepted else "rejected")
+
+    supervisor = Supervisor(
+        cfg,
+        bus=bus,
+        camera=camera,
+        radar=radar,
+        clock=clock,
+        warn_at_start=unclean,
+        on_progress=controller.progress if controller is not None else None,
+        on_command=on_command,
+    )
 
     stop = threading.Event()
 
     def on_signal(signum: int, _frame: FrameType | None) -> None:
         stop.set()  # the supervisor shuts down after its current tick
 
+    def on_usr1(signum: int, _frame: FrameType | None) -> None:
+        supervisor.request("split")
+
+    def on_usr2(signum: int, _frame: FrameType | None) -> None:
+        supervisor.request("toggle")
+
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGUSR1, on_usr1)
+    signal.signal(signal.SIGUSR2, on_usr2)
+
+    def on_gesture(gesture: Gesture) -> None:
+        if gesture is Gesture.SINGLE:
+            supervisor.request("split")
+        elif gesture is Gesture.DOUBLE:
+            supervisor.request("toggle")
+        elif gesture is Gesture.LONG_ARMED and controller is not None:
+            controller.flash("long_armed")
+
+    reader: ButtonReader | None = None
+    if not fake:
+        device = find_button(cfg.control.button_name)
+        if device is None:
+            log.warning("button %r not found; running without it", cfg.control.button_name)
+        else:
+            reader = ButtonReader(device, GestureClassifier(cfg.control), on_gesture, clock)
+            reader.start()
+
+    def heartbeat() -> None:
+        notify("WATCHDOG=1")
+
     try:
-        supervisor.run(stop)
+        notify("READY=1")
+        supervisor.run(stop, heartbeat=heartbeat)
     finally:
+        if reader is not None:
+            reader.stop()
         bus.close()
     return 0
+
+
+def previous_run_unclean(status_file: Path) -> bool:
+    """True when the last run left a status file whose state is not ``stopped``."""
+    try:
+        data: Any = json.loads(status_file.read_text())
+    except (OSError, ValueError):
+        return False
+    state = data.get("state") if isinstance(data, dict) else None
+    return isinstance(state, str) and state != "stopped"
 
 
 def _status(cfg: Config) -> int:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from radar_cam_recorder.cli import main
+from radar_cam_recorder.cli import main, previous_run_unclean
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "deploy" / "config.example.toml"
 
@@ -106,3 +106,55 @@ def test_status_missing_file(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     cfg = _write_config(tmp_path)
     assert main(["status", "--config", str(cfg)]) == 1
     assert "error: no status file at" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        (None, False),
+        ("", False),
+        ("{bad", False),
+        ('{"state": "stopped"}', False),
+        ('{"state": "idle"}', True),
+        ('{"state": "recording"}', True),
+        ('{"state": 3}', False),
+    ],
+)
+def test_previous_run_unclean(tmp_path: Path, content: str | None, expected: bool) -> None:
+    path = tmp_path / "status.json"
+    if content is not None:
+        path.write_text(content)
+    assert previous_run_unclean(path) is expected
+
+
+def test_run_fake_handles_sigusr(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path)
+    status = tmp_path / "status.json"
+    rec = tmp_path / "rec"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "radar_cam_recorder.cli", "run", "--fake", "--config", str(cfg)],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while _status_state(status) != "recording":
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "recorder never reported recording"
+            time.sleep(0.1)
+        proc.send_signal(signal.SIGUSR1)
+        while len([p for p in rec.iterdir() if p.is_dir()]) < 2:
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "SIGUSR1 never split the session"
+            time.sleep(0.1)
+        proc.send_signal(signal.SIGTERM)
+        _, err = proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    assert proc.returncode == 0, err
+    sessions = sorted(p for p in rec.iterdir() if p.is_dir())
+    assert len(sessions) >= 2
+    first = json.loads((sessions[0] / "session.json").read_text())
+    assert first["state"] == "complete"
