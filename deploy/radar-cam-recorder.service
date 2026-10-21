@@ -1,0 +1,20 @@
+[Unit]
+Description=Camera + LD2451 radar recorder
+After=local-fs.target
+
+[Service]
+Type=simple
+User=bmendonca
+WorkingDirectory=/home/bmendonca/workspace/radar-cam-recorder
+ExecStart=/home/bmendonca/workspace/radar-cam-recorder/.venv/bin/radar-cam-recorder run --config /etc/radar-cam-recorder.toml
+RuntimeDirectory=radar-cam-recorder
+KillSignal=SIGTERM
+# Only the recorder gets SIGTERM; it stops rpicam-vid itself with SIGINT so the
+# video file is finalised. Leftovers are SIGKILLed after TimeoutStopSec.
+KillMode=mixed
+TimeoutStopSec=15
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
