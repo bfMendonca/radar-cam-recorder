@@ -1,0 +1,40 @@
+[recording]
+segment_s = 300.0        # length of each video/radar segment, seconds
+retry_initial_s = 1.0    # first retry delay after a device failure, seconds
+retry_max_s = 60.0       # upper bound of the retry backoff, seconds
+status_file = "/run/radar-cam-recorder/status.json"  # live status snapshot
+
+[storage]
+recordings_dir = "/home/bmendonca/recordings"  # where sessions are written (required)
+require_mountpoint = false  # refuse to record unless recordings_dir is a mount point
+stop_below_mb = 1024     # stop recording when free space drops below this, MiB
+resume_above_mb = 1536   # resume recording when free space rises above this, MiB
+check_interval_s = 5.0   # free-space check period, seconds
+
+[camera]
+enabled = true           # record video
+binary = "rpicam-vid"    # camera capture executable
+width = 1296             # frame width, pixels
+height = 972             # frame height, pixels
+framerate = 25.0         # frames per second
+bitrate = 4000000        # video bitrate, bits per second
+extra_args = []          # extra arguments appended to the capture command
+stop_timeout_s = 5.0     # wait this long for the camera to stop before killing it, seconds
+
+[radar]
+enabled = true           # record radar data
+port = "/dev/serial0"    # serial port of the LD2451
+baudrate = 115200        # serial baud rate
+silence_timeout_s = 5.0  # no radar frames for this long counts as a failure, seconds
+
+# Optional: apply detection parameters to the radar at start.
+# [radar.detection]
+# max_distance_m = 50        # 10..255 m
+# direction = "both"         # "away", "approach" or "both"
+# min_speed_kmh = 0          # 0..120 km/h
+# no_target_delay_s = 1      # 0..255 s
+
+[setup]
+notes = ""               # free-text description of the installation
+
+[setup.geometry]         # named measurements in metres, e.g. radar_height_m = 1.2
