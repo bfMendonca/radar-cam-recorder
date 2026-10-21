@@ -100,6 +100,7 @@ class Supervisor:
         self._camera_retry = _Backoff(cfg.retry_initial_s, cfg.retry_max_s)
         self._radar_retry = _Backoff(cfg.retry_initial_s, cfg.retry_max_s)
         self._radar_started = False
+        self._camera_up_since_ns: int | None = None  # start of the current run of good runs
         self._shutdown_lock = threading.Lock()
         self._shut_down = False
         bus.add_sink(self)
@@ -138,7 +139,7 @@ class Supervisor:
             if not self._storage_allows_recording():
                 return
             if self._session is None:
-                self._open_session(now)
+                self._try_open_session(now)
                 return
             self._writer.flush()
         elif self._session is None:
@@ -146,7 +147,7 @@ class Supervisor:
         error = self._writer.take_error()
         if error is not None:
             raise error
-        if now - self._segment_start_ns >= self._cfg.segment_s * 1e9:
+        if now - self._segment_start_ns >= self._segment_ns():
             self._rotate(now)
         elif self._pending_gap is not None:
             self._report_gap()
@@ -214,6 +215,7 @@ class Supervisor:
         self._segment = None
         self._pending_gap = None
         self._radar_started = False
+        self._camera_up_since_ns = None
         self._camera_retry.reset()
         self._radar_retry.reset()
         self._writer.take_error()  # belongs to the closed session
@@ -232,6 +234,20 @@ class Supervisor:
     def _check_storage(self) -> StorageCheck:
         storage = self._cfg.storage
         return self._storage_check(storage.recordings_dir, storage.require_mountpoint)
+
+    def _try_open_session(self, now: int) -> None:
+        """Open a session; an unexpected error is a state, retried at the next check."""
+        try:
+            self._open_session(now)
+        except OSError:
+            raise
+        except Exception as exc:
+            reason = f"error: {type(exc).__name__}: {exc}"
+            changed = self._stop_recording(State.ERROR, reason)
+            if changed:
+                log.warning("cannot open a session: %s", reason, exc_info=True)
+            else:
+                log.debug("cannot open a session: %s", reason)
 
     def _open_session(self, now: int) -> None:
         session = self._store.create(
@@ -261,7 +277,12 @@ class Supervisor:
         self._segment = segment
         self._segment_start_ns = now
         retry = self._camera_retry
-        if self._camera is None or (retry.failing and not retry.due(now)):
+        if not retry.failing or retry.due(now):
+            self._start_camera(segment, now)
+
+    def _start_camera(self, segment: SegmentPaths, now: int) -> None:
+        retry = self._camera_retry
+        if self._camera is None:
             return
         try:
             self._camera_run = self._camera.start(segment)
@@ -272,6 +293,10 @@ class Supervisor:
                 self._bus.incident("camera start failed", segment=segment.index, error=str(exc))
             else:
                 log.debug("camera start failed again: %s", exc)
+            self._camera_up_since_ns = None
+            return
+        if self._camera_up_since_ns is None:
+            self._camera_up_since_ns = now
 
     def _stop_camera(self) -> int:
         """Stop the camera run and write the segment's frames CSV; return its frame count."""
@@ -286,13 +311,6 @@ class Supervisor:
     def _rotate(self, now: int) -> None:
         session, old = self._session, self._segment
         assert session is not None and old is not None
-        run = self._camera_run
-        if (
-            run is not None
-            and run.alive()
-            and now - self._segment_start_ns >= self._cfg.segment_s * 1e9
-        ):
-            self._camera_retry.reset()  # this run survived a full segment
         frames = self._stop_camera()
         new = session.segment(old.index + 1)
         if self._radar is not None:
@@ -331,12 +349,22 @@ class Supervisor:
     def _check_camera(self, now: int) -> None:
         if self._camera is None:
             return
-        if self._camera_run is None and self._camera_retry.due(now):
-            self._rotate(now)  # a fresh segment, so nothing recorded is overwritten
+        retry, segment = self._camera_retry, self._segment
+        if self._camera_run is None and retry.due(now) and segment is not None:
+            if _has_frames(segment.meta):
+                self._rotate(now)  # never overwrite recorded frames
+            else:
+                self._start_camera(segment, now)  # only empty camera files are replaced
         run, segment = self._camera_run, self._segment
-        if run is None or run.alive() or segment is None:
+        if run is None or segment is None:
             return
-        if self._camera_retry.fail(now):
+        if run.alive():
+            up_since = self._camera_up_since_ns
+            if retry.failing and up_since is not None and now - up_since >= self._segment_ns():
+                retry.reset()  # the camera survived a full segment
+            return
+        self._camera_up_since_ns = None
+        if retry.fail(now):
             self._bus.incident(
                 "camera exited",
                 segment=segment.index,
@@ -376,8 +404,12 @@ class Supervisor:
         timeout_ns = self._cfg.radar.silence_timeout_s * 1e9
         return self._radar.silent_for_ns(now, self._writer) > timeout_ns
 
+    def _segment_ns(self) -> float:
+        return self._cfg.segment_s * 1e9
+
     def _update_state(self, now: int) -> None:
-        camera_missing = self._camera is not None and self._camera_retry.failing
+        run = self._camera_run
+        camera_missing = self._camera is not None and (run is None or not run.alive())
         radar_missing = self._radar is not None and (
             not self._radar_started or self._radar_silent(now)
         )
@@ -419,6 +451,17 @@ def _attempt(what: str, fn: Callable[[], T], default: T) -> T:
     except Exception:
         log.exception("cannot %s", what)
         return default
+
+
+def _has_frames(meta: Path) -> bool:
+    """True if ``meta`` holds a frame, or cannot be read (then it must not be overwritten)."""
+    try:
+        text = meta.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return bool(parse_metadata(text))
 
 
 def _tail(path: Path, lines: int) -> list[str]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ SESSION_FILE = "session.json"
 EVENTS_FILE = "events.jsonl"
 COUNTER_FILE = ".session_counter"
 INTERRUPTED_REASON = "interrupted (found at next start)"
+_SESSION_DIR = re.compile(r"s(\d{6,})")
 
 FramesWriter = Callable[[Path, Path], int]
 
@@ -130,18 +132,21 @@ class SessionStore:
         self.root = root
 
     def next_id(self) -> str:
+        """Return the next id and advance the counter; never reuses or lowers an id.
+
+        A missing, unreadable or corrupt counter is healed from the highest session dir.
+        """
         counter = self.root / COUNTER_FILE
-        try:
-            text = counter.read_text()
-        except FileNotFoundError:
-            last = 0
-        else:
-            try:
-                last = int(text.strip())
-            except ValueError:
-                raise ValueError(f"corrupt session counter file {counter}: {text[:40]!r}") from None
-            if last < 0:
-                raise ValueError(f"corrupt session counter file {counter}: {text[:40]!r}")
+        last, problem = _read_counter(counter)
+        if last is None:
+            last = _highest_session_number(self.root)
+            if problem is not None or last > 0:
+                log.warning(
+                    "session counter %s %s; continuing after s%06d",
+                    counter,
+                    problem or "missing",
+                    last,
+                )
         _atomic_write(counter, f"{last + 1}\n")
         return f"s{last + 1:06d}"
 
@@ -200,6 +205,32 @@ class SessionStore:
             _write_json(session_file, data)
             marked.append(child.name)
         return marked
+
+
+def _read_counter(counter: Path) -> tuple[int | None, str | None]:
+    """Return (value, None), or (None, problem); (None, None) if there is no counter yet."""
+    try:
+        text = counter.read_text()
+    except FileNotFoundError:
+        return None, None
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"unreadable ({exc})"
+    try:
+        value = int(text.strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        return None, f"corrupt ({text[:40]!r})"
+    return value, None
+
+
+def _highest_session_number(root: Path) -> int:
+    numbers = [0]
+    for child in root.iterdir():
+        match = _SESSION_DIR.fullmatch(child.name)
+        if match and child.is_dir():
+            numbers.append(int(match.group(1)))
+    return max(numbers)
 
 
 def _write_missing_frames(session_dir: Path, frames_writer: FramesWriter) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ from radar_cam_recorder.camera.rpicam import RpicamCamera
 from radar_cam_recorder.config import Config, parse_config
 from radar_cam_recorder.fakes import fake_radar_transport
 from radar_cam_recorder.radar import RadarInfo, RadarStream, SegmentedRadarWriter
-from radar_cam_recorder.session import SegmentPaths
+from radar_cam_recorder.session import SegmentPaths, SessionStore
 from radar_cam_recorder.status import StatusBus
 from radar_cam_recorder.storage import StorageCheck, check_storage
 from radar_cam_recorder.supervisor import Supervisor
@@ -55,15 +56,17 @@ def free(gib: float) -> StorageCheck:
 
 
 class CountingCamera:
-    """FakeCamera that records the (manual) time of every start."""
+    """FakeCamera that records the (manual) time and segment of every start."""
 
     def __init__(self, clock: Callable[[], int], fail_starts: int = 0) -> None:
         self._clock = clock
         self._cam = FakeCamera(clock, fail_starts=fail_starts)
         self.starts: list[int] = []
+        self.segments: list[int] = []
 
     def start(self, paths: SegmentPaths) -> CameraRun:
         self.starts.append(self._clock())
+        self.segments.append(paths.index)
         return self._cam.start(paths)
 
     def describe(self) -> dict[str, Any]:
@@ -145,6 +148,7 @@ def make_rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callab
         camera: Factory = lambda clock: FakeCamera(clock),
         radar: Factory | None = None,
         storage: Callable[[Path, bool], StorageCheck] = lambda p, m: PLENTY,
+        store: SessionStore | None = None,
     ) -> Rig:
         cfg = cfg or make_cfg(tmp_path)
         transport = fake_radar_transport()
@@ -154,7 +158,9 @@ def make_rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callab
         cam = camera(clock)
         rad = radar(clock) if radar else RadarStream(cfg.radar, lambda: transport)
         transport = getattr(rad, "transport", transport)
-        sup = Supervisor(cfg, bus=bus, camera=cam, radar=rad, clock=clock, storage_check=storage)
+        sup = Supervisor(
+            cfg, bus=bus, camera=cam, radar=rad, store=store, clock=clock, storage_check=storage
+        )
         rig = Rig(sup, now, bus, sink, tmp_path, cam, rad, transport)
         rigs.append(rig)
         return rig
@@ -280,22 +286,69 @@ def test_storage_missing_then_back(make_rig: Callable[..., Rig], tmp_path: Path)
     assert rig.sup.session.path.parent == root
 
 
+def run_feeding_radar(rig: Rig, start_s: float, stop_s: float, check: Callable[[], None]) -> None:
+    """Tick every 0.25 s over [start_s, stop_s), feeding the radar each second."""
+    t = start_s
+    while t < stop_s - 1e-9:
+        rig.tick_at(t)
+        check()
+        if round(t * 4) % 4 == 0:
+            rig.feed_radar()  # keeps the radar from going silent
+        t += 0.25
+
+
+def kill_camera(rig: Rig) -> None:
+    run = rig.sup._camera_run
+    assert run is not None and run.alive()
+    run.stop(2.0)
+
+
 def test_camera_crash_degraded_and_backoff(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
     rig = make_rig(
         make_cfg(tmp_path, segment_s=10.0),  # segments longer than the retries
         camera=lambda clock: CountingCamera(clock, fail_starts=3),
     )
-    for step in range(68):  # 0 to 16.75 s
-        rig.tick_at(step * 0.25)
+
+    def missing() -> None:
         assert rig.state() == ("degraded", "camera missing")
-        if step % 4 == 0:
-            rig.feed_radar()  # keeps the radar from going silent
-    assert [s / S for s in rig.camera.starts] == [0, 1, 3, 7]
-    rig.tick_at(17.0)  # the run started at 7 s survived a full segment
+
+    def recording() -> None:
+        assert rig.state() == ("recording", "recording")
+
+    run_feeding_radar(rig, 0, 7, missing)
+    assert [s / S for s in rig.camera.starts] == [0, 1, 3]
+    assert rig.camera.segments == [0, 0, 0]  # runs that left nothing: no new segment
+    run_feeding_radar(rig, 7, 17.25, recording)  # alive from 7 s: recording again at once
+    assert [s / S for s in rig.camera.starts] == [0, 1, 3, 7, 10]  # 10 s: regular rotation
+    assert rig.camera.segments == [0, 0, 0, 0, 1]
+    # The run has been up since 7 s, a full segment: a new failure retries after retry_initial_s.
+    kill_camera(rig)
+    run_feeding_radar(rig, 17.25, 18.25, missing)
+    rig.tick_at(18.25)
+    assert [s / S for s in rig.camera.starts][-1] == 18.25
+    assert rig.camera.segments[-1] == 2  # segment 1 has frames: the retry gets a new one
     assert rig.state() == ("recording", "recording")
     rig.sup.shutdown()
-    exited = rig.incidents("camera exited")
-    assert exited == [{"segment": 0, "returncode": 1, "log": []}]
+    assert rig.incidents("camera exited") == [
+        {"segment": 0, "returncode": 1, "log": []},
+        {"segment": 1, "returncode": 0, "log": []},
+    ]
+
+
+def test_camera_backoff_resets_only_after_full_segment(
+    make_rig: Callable[..., Rig], tmp_path: Path
+) -> None:
+    rig = make_rig(
+        make_cfg(tmp_path, segment_s=10.0),
+        camera=lambda clock: CountingCamera(clock, fail_starts=3),
+    )
+    run_feeding_radar(rig, 0, 11, lambda: None)  # starts at 0, 1, 3, 7; rotation at 10
+    kill_camera(rig)  # up 4 s only: the streak goes on, next delay 8 s
+    run_feeding_radar(rig, 11, 19.25, lambda: None)
+    assert [s / S for s in rig.camera.starts] == [0, 1, 3, 7, 10, 19]
+    assert rig.camera.segments[-1] == 2
+    rig.sup.shutdown()
+    assert len(rig.incidents("camera exited")) == 1  # still the same streak
 
 
 def test_camera_backoff_capped(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
@@ -395,3 +448,61 @@ def test_unreadable_meta_skips_gap(
     rig.tick_at(1.2)  # no exception, gap skipped
     assert rig.sup._pending_gap is None
     assert rig.state() == ("recording", "recording")
+
+
+class BrokenStore(SessionStore):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.broken = True
+        self.creates = 0
+
+    def create(self, config: Any, boot_id: str, start: Any) -> Any:
+        self.creates += 1
+        if self.broken:
+            raise RuntimeError("boom")
+        return super().create(config, boot_id, start)
+
+
+def test_unexpected_error_opening_session_is_error_state(
+    make_rig: Callable[..., Rig], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = BrokenStore(tmp_path)
+    rig = make_rig(store=store)
+    with caplog.at_level(logging.DEBUG, logger="radar_cam_recorder"):
+        rig.tick_at(0)  # no exception
+        assert rig.state() == ("error", "error: RuntimeError: boom")
+        assert rig.sup.session is None
+        rig.tick_at(0.2)  # before the next check: no retry
+        assert store.creates == 1
+        rig.tick_at(0.5)
+        rig.tick_at(1.0)
+        assert store.creates == 3
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1  # once per streak
+    assert list(tmp_path.iterdir()) == []
+    store.broken = False
+    rig.tick_at(1.5)
+    assert rig.state() == ("recording", "recording")
+
+
+class BrokenDescribeCamera:
+    def __init__(self, clock: Callable[[], int]) -> None:
+        self._cam = FakeCamera(clock)
+
+    def start(self, paths: SegmentPaths) -> CameraRun:
+        return self._cam.start(paths)
+
+    def describe(self) -> dict[str, Any]:
+        raise RuntimeError("bad camera description")
+
+
+def test_error_after_session_created_leaves_no_session_open(
+    make_rig: Callable[..., Rig],
+) -> None:
+    rig = make_rig(camera=BrokenDescribeCamera)
+    rig.tick_at(0)
+    assert rig.state() == ("error", "error: RuntimeError: bad camera description")
+    assert rig.sup.session is None
+    [data] = rig.sessions()
+    assert data["state"] == "complete"
+    assert data["stop_reason"] == "error: RuntimeError: bad camera description"

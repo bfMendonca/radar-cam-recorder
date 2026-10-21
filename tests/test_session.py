@@ -32,11 +32,31 @@ def test_init_does_not_touch_disk(tmp_path: Path) -> None:
     assert not (tmp_path / "missing").exists()
 
 
-def test_corrupt_counter_raises_naming_file(tmp_path: Path) -> None:
-    (tmp_path / ".session_counter").write_text("garbage")
-    with pytest.raises(ValueError, match=r"\.session_counter"):
-        SessionStore(tmp_path).next_id()
-    assert (tmp_path / ".session_counter").read_text() == "garbage"
+@pytest.mark.parametrize("text", ["garbage", "-5", "\xff\xfe"])
+def test_corrupt_counter_heals_from_session_dirs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, text: str
+) -> None:
+    for name in ("s000001", "s000002", "s000003", "notes"):
+        (tmp_path / name).mkdir()
+    (tmp_path / ".session_counter").write_bytes(text.encode("latin-1"))
+    with caplog.at_level(logging.WARNING, logger="radar_cam_recorder"):
+        assert SessionStore(tmp_path).next_id() == "s000004"
+    assert (tmp_path / ".session_counter").read_text() == "4\n"
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert ".session_counter" in warnings[0].getMessage()
+    assert SessionStore(tmp_path).next_id() == "s000005"
+
+
+def test_missing_counter_continues_after_session_dirs(tmp_path: Path) -> None:
+    (tmp_path / "s000007").mkdir()
+    assert SessionStore(tmp_path).next_id() == "s000008"
+
+
+def test_valid_counter_is_never_lowered(tmp_path: Path) -> None:
+    (tmp_path / "s000002").mkdir()
+    (tmp_path / ".session_counter").write_text("9\n")
+    assert SessionStore(tmp_path).next_id() == "s000010"
 
 
 def test_create_writes_session_json(tmp_path: Path) -> None:
@@ -61,6 +81,7 @@ def test_create_writes_session_json(tmp_path: Path) -> None:
 def test_create_never_reuses_existing_dir(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     (tmp_path / "s000001").mkdir()
+    (tmp_path / ".session_counter").write_text("0\n")  # a valid counter that lags the dirs
     with pytest.raises(FileExistsError):
         store.create({}, "b", SAMPLE)
 
