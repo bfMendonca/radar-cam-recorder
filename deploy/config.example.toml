@@ -35,6 +35,19 @@ silence_timeout_s = 5.0  # no radar frames for this long counts as a failure, se
 # min_speed_kmh = 0          # 0..120 km/h
 # no_target_delay_s = 1      # 0..255 s
 
+[control]
+start_mode = "idle"      # state at boot: "idle" (wait for the button) or "record"
+button_name = "button@3" # input-device name of the button (gpio-keys)
+double_press_s = 0.4     # max gap between two presses to count as a double press, seconds
+max_press_s = 1.0        # a press held longer than this is no longer a short press, seconds
+long_press_s = 5.0       # hold this long for a long press, seconds (must exceed max_press_s)
+debounce_s = 0.03        # ignore edges closer than this, seconds (must be below double_press_s)
+
+[leds]
+enabled = true           # drive the status LEDs
+green = "rcr-green"      # sysfs LED name for the green LED
+red = "rcr-red"          # sysfs LED name for the red LED
+
 [setup]
 notes = ""               # free-text description of the installation
 

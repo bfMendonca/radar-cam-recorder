@@ -20,6 +20,8 @@ __all__ = [
     "CameraConfig",
     "Config",
     "ConfigError",
+    "ControlConfig",
+    "LedsConfig",
     "RadarConfig",
     "SetupConfig",
     "StorageConfig",
@@ -80,11 +82,30 @@ class SetupConfig:
 
 
 @dataclass(frozen=True)
+class ControlConfig:
+    start_mode: str
+    button_name: str
+    double_press_s: float
+    max_press_s: float
+    long_press_s: float
+    debounce_s: float
+
+
+@dataclass(frozen=True)
+class LedsConfig:
+    enabled: bool
+    green: str
+    red: str
+
+
+@dataclass(frozen=True)
 class Config:
     storage: StorageConfig
     camera: CameraConfig
     radar: RadarConfig
     setup: SetupConfig
+    control: ControlConfig
+    leds: LedsConfig
     segment_s: float
     retry_initial_s: float
     retry_max_s: float
@@ -150,7 +171,7 @@ def _parse_detection(raw: Any) -> ld2451.DetectionParams:
 def parse_config(data: Mapping[str, Any]) -> Config:
     """Validate a parsed TOML mapping and build a :class:`Config`."""
     for table in data:
-        if table not in {"recording", "storage", "camera", "radar", "setup"}:
+        if table not in {"recording", "storage", "camera", "radar", "setup", "control", "leds"}:
             raise ConfigError(f"unknown table [{table}]")
 
     rec = _table(data, "recording", {"segment_s", "retry_initial_s", "retry_max_s", "status_file"})
@@ -251,11 +272,51 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         geometry[str(key)] = float(val)
     setup = SetupConfig(notes=_get(su, "setup", "notes", "", str), geometry=geometry)
 
+    ctl = _table(
+        data,
+        "control",
+        {
+            "start_mode",
+            "button_name",
+            "double_press_s",
+            "max_press_s",
+            "long_press_s",
+            "debounce_s",
+        },
+    )
+    control = ControlConfig(
+        start_mode=_get(ctl, "control", "start_mode", "idle", str),
+        button_name=_get(ctl, "control", "button_name", "button@3", str),
+        double_press_s=_get(ctl, "control", "double_press_s", 0.4, float),
+        max_press_s=_get(ctl, "control", "max_press_s", 1.0, float),
+        long_press_s=_get(ctl, "control", "long_press_s", 5.0, float),
+        debounce_s=_get(ctl, "control", "debounce_s", 0.03, float),
+    )
+    if control.start_mode not in {"idle", "record"}:
+        raise ConfigError("[control] start_mode must be one of ['idle', 'record']")
+    if not control.button_name:
+        raise ConfigError("[control] button_name must not be empty")
+    for key in ("double_press_s", "max_press_s", "long_press_s", "debounce_s"):
+        _positive("control", key, getattr(control, key))
+    if control.long_press_s <= control.max_press_s:
+        raise ConfigError("[control] long_press_s must be > max_press_s")
+    if control.debounce_s >= control.double_press_s:
+        raise ConfigError("[control] debounce_s must be < double_press_s")
+
+    led = _table(data, "leds", {"enabled", "green", "red"})
+    leds = LedsConfig(
+        enabled=_get(led, "leds", "enabled", True, bool),
+        green=_get(led, "leds", "green", "rcr-green", str),
+        red=_get(led, "leds", "red", "rcr-red", str),
+    )
+
     return Config(
         storage=storage,
         camera=camera,
         radar=radar,
         setup=setup,
+        control=control,
+        leds=leds,
         segment_s=segment_s,
         retry_initial_s=retry_initial_s,
         retry_max_s=retry_max_s,
@@ -319,4 +380,13 @@ def config_to_dict(cfg: Config) -> dict[str, Any]:
             "detection": detection,
         },
         "setup": {"notes": cfg.setup.notes, "geometry": dict(cfg.setup.geometry)},
+        "control": {
+            "start_mode": cfg.control.start_mode,
+            "button_name": cfg.control.button_name,
+            "double_press_s": cfg.control.double_press_s,
+            "max_press_s": cfg.control.max_press_s,
+            "long_press_s": cfg.control.long_press_s,
+            "debounce_s": cfg.control.debounce_s,
+        },
+        "leds": {"enabled": cfg.leds.enabled, "green": cfg.leds.green, "red": cfg.leds.red},
     }

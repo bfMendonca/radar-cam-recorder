@@ -7,7 +7,18 @@ from typing import Any
 import ld2451
 import pytest
 
-from radar_cam_recorder.config import ConfigError, config_to_dict, load_config, parse_config
+from radar_cam_recorder.config import (
+    ConfigError,
+    ControlConfig,
+    LedsConfig,
+    config_to_dict,
+    load_config,
+    parse_config,
+)
+
+
+def minimal(**tables: Any) -> dict[str, Any]:
+    return {"storage": {"recordings_dir": "/x"}, **tables}
 
 
 def test_minimal_config_uses_defaults(tmp_path: Path) -> None:
@@ -97,3 +108,34 @@ def test_snapshot_is_json() -> None:
     snapshot = config_to_dict(cfg)
     json.dumps(snapshot)
     assert snapshot["camera"]["stall_timeout_s"] == 7.5
+
+
+def test_control_defaults() -> None:
+    cfg = parse_config(minimal())
+    assert cfg.control == ControlConfig("idle", "button@3", 0.4, 1.0, 5.0, 0.03)
+    assert cfg.leds == LedsConfig(True, "rcr-green", "rcr-red")
+
+
+def test_start_mode_record() -> None:
+    assert parse_config(minimal(control={"start_mode": "record"})).control.start_mode == "record"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"start_mode": "always"},
+        {"double_press_s": 0},
+        {"long_press_s": 1.0, "max_press_s": 1.0},  # long must exceed max short press
+        {"debounce_s": 0.5},  # debounce must be below double_press_s
+    ],
+)
+def test_control_rejects(bad: dict[str, Any]) -> None:
+    with pytest.raises(ConfigError):
+        parse_config(minimal(control=bad))
+
+
+def test_snapshot_includes_control_and_leds() -> None:
+    snapshot = config_to_dict(parse_config(minimal(leds={"enabled": False})))
+    json.dumps(snapshot)
+    assert snapshot["control"]["button_name"] == "button@3"
+    assert snapshot["leds"] == {"enabled": False, "green": "rcr-green", "red": "rcr-red"}
