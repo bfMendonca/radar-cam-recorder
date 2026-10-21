@@ -93,17 +93,27 @@ class Session:
             self._save()
 
     def add_segment(
-        self, index: int, start_boottime_ns: int, end_boottime_ns: int, frames: int
+        self,
+        index: int,
+        start_boottime_ns: int,
+        end_boottime_ns: int,
+        frames: int,
+        *,
+        drops: int | None = None,
+        max_gap_ns: int | None = None,
     ) -> None:
+        """Record a closed segment; ``drops``/``max_gap_ns`` (camera only) are optional keys."""
+        record: dict[str, Any] = {
+            "index": index,
+            "start_boottime_ns": start_boottime_ns,
+            "end_boottime_ns": end_boottime_ns,
+            "frames": frames,
+        }
+        if drops is not None:
+            record["drops"] = drops
+            record["max_gap_ns"] = max_gap_ns
         with self._lock:
-            self._data["segments"].append(
-                {
-                    "index": index,
-                    "start_boottime_ns": start_boottime_ns,
-                    "end_boottime_ns": end_boottime_ns,
-                    "frames": frames,
-                }
-            )
+            self._data["segments"].append(record)
             self._save()
 
     def append_event(self, event: StatusEvent) -> None:

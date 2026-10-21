@@ -48,12 +48,17 @@ def _skip_ws(text: str, pos: int) -> int:
 def write_frames_csv(meta_path: Path, frames_path: Path) -> int:
     """Write ``frames_path`` atomically from ``meta_path``; return the number of rows."""
     text = meta_path.read_text(encoding="utf-8", errors="replace")
+    return write_frames(parse_metadata(text), frames_path)
+
+
+def write_frames(frames: list[dict[str, Any]], frames_path: Path) -> int:
+    """Write already parsed frame objects to ``frames_path`` atomically; return the row count."""
     tmp = frames_path.with_name(frames_path.name + ".tmp")
     count = 0
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(HEADER)
-        for obj in parse_metadata(text):
+        for obj in frames:
             if "SensorTimestamp" not in obj:
                 continue
             writer.writerow([count, *(obj.get(key, "") for key in _COLUMNS)])

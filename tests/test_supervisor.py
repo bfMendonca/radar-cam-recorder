@@ -240,14 +240,14 @@ def test_shutdown_completes_session(rig: Rig) -> None:
     assert [s["label"] for s in data["clock_samples"]] == ["start", "stop"]
     assert data["clock_samples"][-1]["boottime_ns"] == int(0.4 * S)
     assert rig.segment(0).frames.exists()
-    assert data["segments"] == [
-        {
-            "index": 0,
-            "start_boottime_ns": 0,
-            "end_boottime_ns": int(0.4 * S),
-            "frames": len(rig.segment(0).frames.read_text().splitlines()) - 1,
-        }
-    ]
+    [segment] = data["segments"]
+    assert segment["drops"] >= 0  # timing-dependent (real fake-camera frames)
+    assert {k: v for k, v in segment.items() if k not in ("drops", "max_gap_ns")} == {
+        "index": 0,
+        "start_boottime_ns": 0,
+        "end_boottime_ns": int(0.4 * S),
+        "frames": len(rig.segment(0).frames.read_text().splitlines()) - 1,
+    }
     assert rig.bus.current.state is State.STOPPED
     events = [json.loads(line) for line in rig.events_text().splitlines()]
     states = [e["state"] for e in events if e["kind"] == "state"]
@@ -328,6 +328,20 @@ def test_run_recovers_interrupted_sessions(tmp_path: Path) -> None:
     left = SessionStore(tmp_path).create({}, "old-boot", ClockSample(0, 0, 0))
     rig = build(tmp_path)
     stop = threading.Event()
+    thread = threading.Thread(target=rig.sup.run, args=(stop, 0.01))
+    thread.start()
+    wait_until(lambda: rig.sup.session is not None)
+    stop.set()
+    thread.join(5)
+    assert read_json(left.path / "session.json")["state"] == "interrupted"
+    assert rig.session_json()["state"] == "complete"
+
+
+def test_run_publishes_starting_first(tmp_path: Path) -> None:
+    rig = build(tmp_path)
+    stop = threading.Event()
     stop.set()
     rig.sup.run(stop, 0.01)
-    assert read_json(left.path / "session.json")["state"] == "interrupted"
+    states = [(e.state, e.reason) for e in rig.sink.events if e.kind == "state"]
+    assert states[0] == (State.STARTING, "starting")
+    assert states[-1][0] is State.STOPPED

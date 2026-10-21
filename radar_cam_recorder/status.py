@@ -90,6 +90,11 @@ class StatusBus:
             self._enqueue(event)
         return True
 
+    def announce(self) -> None:
+        """Publish the current state again, e.g. the initial ``starting`` for the sinks."""
+        with self._lock:
+            self._enqueue(self._current)
+
     def incident(self, reason: str, **detail: Any) -> None:
         with self._lock:
             event = StatusEvent("incident", self._current.state, reason, self._clock(), detail)

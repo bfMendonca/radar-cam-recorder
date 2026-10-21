@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import logging
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,12 +12,15 @@ import ld2451
 import pytest
 
 from radar_cam_recorder import radar as radar_module
+from radar_cam_recorder import supervisor as supervisor_module
 from radar_cam_recorder.camera.base import CameraRun
 from radar_cam_recorder.camera.fake import FakeCamera
 from radar_cam_recorder.camera.rpicam import RpicamCamera
+from radar_cam_recorder.clocks import ClockSample
 from radar_cam_recorder.config import Config, parse_config
 from radar_cam_recorder.fakes import fake_radar_transport
 from radar_cam_recorder.radar import RadarInfo, RadarStream, SegmentedRadarWriter
+from radar_cam_recorder.reader import open_session
 from radar_cam_recorder.session import SegmentPaths, SessionStore
 from radar_cam_recorder.status import StatusBus
 from radar_cam_recorder.storage import StorageCheck, check_storage
@@ -644,3 +648,193 @@ def test_camera_stall_after_frames(make_rig: Callable[..., Rig], tmp_path: Path)
     assert rig.state() == ("recording", "recording")
     rig.sup.shutdown()
     assert rig.incidents("camera stalled") == [{"segment": 0, "stalled_s": 2.0}]
+
+
+def test_reused_segment_after_stall_survives_power_cut(
+    make_rig: Callable[..., Rig], tmp_path: Path
+) -> None:
+    rig = stall_rig(make_rig, tmp_path)
+    for step in range(9):  # run 0 never delivers a frame: stalled at 2 s
+        rig.tick_at(step * 0.25)
+    seg0 = rig.camera.runs[0].paths
+    assert seg0.frames.exists()  # the stopped run's (empty) frames CSV
+    rig.tick_at(3.0)  # retry: nothing recorded, so segment 0 is reused
+    assert [r.paths.index for r in rig.camera.runs] == [0, 0]
+    assert not seg0.frames.exists()  # the stale CSV went with the reuse
+    for k in range(100):
+        rig.camera.runs[1].write_frame(3 * S + k * 40_000_000)
+        rig.tick_at(3.0 + (k + 1) * 0.04)
+    # Power cut: no shutdown. A stale CSV could also come from an older version; recreate it.
+    seg0.frames.write_text("index,sensor_ts_ns,frame_wall_clock_us,exposure_us,lux\n")
+    session = rig.sup.session
+    assert session is not None
+    assert SessionStore(tmp_path).recover_interrupted() == [session.id]
+    assert len(seg0.frames.read_text().splitlines()) == 1 + 100
+    assert open_session(session.path).summary()["frames"] == 100
+
+
+def slow_frames_writer(monkeypatch: pytest.MonkeyPatch, rig: Rig, delay_s: float) -> list[int]:
+    """Make writing a frames CSV take ``delay_s`` on the manual clock; return the run counts."""
+    real = getattr(supervisor_module, "write_frames", None)
+    runs_at_call: list[int] = []
+
+    def slow(frames: Any, path: Path) -> int:
+        runs_at_call.append(len(rig.camera.runs))
+        rig.camera.runs[-1].write_frame(rig.now[0])  # the new camera records meanwhile
+        rig.now[0] += int(delay_s * S)
+        assert real is not None
+        return int(real(frames, path))
+
+    monkeypatch.setattr(supervisor_module, "write_frames", slow, raising=False)
+    return runs_at_call
+
+
+def test_rotation_starts_camera_before_writing_frames(
+    make_rig: Callable[..., Rig], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig(
+        make_cfg(tmp_path, segment_s=4.0, camera={"stall_timeout_s": 2.0}), camera=ManualCamera
+    )
+    for step in range(16):  # 0 to 3.75 s, one frame per tick
+        rig.tick_at(step * 0.25)
+        rig.camera.runs[-1].write_frame(step)
+    runs_at_call = slow_frames_writer(monkeypatch, rig, 1.5)
+    rig.tick_at(4.0)  # rotation; writing segment 0's CSV takes until 5.5 s
+    assert runs_at_call == [2]  # the new run was already started
+    assert [s / S for s in rig.camera.starts] == [0, 4.0]
+    session = rig.sup.session
+    assert session is not None
+    [seg] = read_json(session.path / "session.json")["segments"]
+    assert (seg["start_boottime_ns"], seg["end_boottime_ns"]) == (0, 4 * S)
+    rig.tick_at(5.75)
+    rig.tick_at(6.0)
+    assert len(rig.camera.runs) == 2
+    assert rig.incidents("camera stalled") == []
+
+
+class SlowStartCamera(ManualCamera):
+    """``start`` takes 1.5 s on the manual clock (e.g. a slow Popen on a busy Pi Zero)."""
+
+    now: list[int]  # the rig's manual clock, set by the test
+
+    def start(self, paths: SegmentPaths) -> CameraRun:
+        run = super().start(paths)
+        self.now[0] += int(1.5 * S)
+        return run
+
+
+def test_stall_grace_counts_from_camera_start(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
+    rig = make_rig(make_cfg(tmp_path, camera={"stall_timeout_s": 2.0}), camera=SlowStartCamera)
+    rig.camera.now = rig.now
+    rig.tick_at(0)  # the start returns at 1.5 s
+    for t in (1.75, 2.0, 2.5, 3.0, 3.25):
+        rig.tick_at(t)
+    assert rig.incidents("camera stalled") == []
+    rig.tick_at(3.5)  # 2 s after the start returned
+    rig.sup.shutdown()
+    assert rig.incidents("camera stalled") == [{"segment": 0, "stalled_s": 2.0}]
+
+
+def test_camera_files_fsynced_when_run_stops(
+    make_rig: Callable[..., Rig], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig(make_cfg(tmp_path, segment_s=1.0))
+    rig.tick_at(0)
+    session = rig.sup.session
+    assert session is not None
+    seg0 = session.segment(0)
+    wait_until(lambda: seg0.meta.exists() and seg0.meta.stat().st_size > 50)
+    synced: list[int] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        synced.append(os.fstat(fd).st_ino)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    rig.tick_at(1.1)  # rotation stops run 0
+    expected = {p.stat().st_ino for p in (seg0.video, seg0.meta, seg0.pts, seg0.video.parent)}
+    assert expected <= set(synced)
+
+
+def test_camera_fsync_failure_is_best_effort(
+    make_rig: Callable[..., Rig], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig(make_cfg(tmp_path, segment_s=1.0))
+    rig.tick_at(0)
+    session = rig.sup.session
+    assert session is not None
+    seg0 = session.segment(0)
+    wait_until(lambda: seg0.meta.exists() and seg0.meta.stat().st_size > 50)
+    camera_files = {p.stat().st_ino for p in (seg0.video, seg0.meta, seg0.pts)}
+    real_fsync = os.fsync
+
+    def failing_fsync(fd: int) -> None:
+        if os.fstat(fd).st_ino in camera_files:
+            raise OSError(errno.EIO, "Input/output error")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    rig.tick_at(1.1)
+    assert rig.camera is not None
+    assert rig.state() == ("recording", "recording")
+    assert rig.sup._segment is not None and rig.sup._segment.index == 1
+
+
+def test_frame_drops_recorded_per_segment(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
+    rig = make_rig(make_cfg(tmp_path, segment_s=4.0), camera=ManualCamera)  # 25 fps: 40 ms
+    ms = 1_000_000
+    rig.tick_at(0)
+    for ts in (0, 40, 80, 200, 240, 400):  # gaps of 120 and 160 ms
+        rig.camera.runs[0].write_frame(ts * ms)
+    rig.tick_at(4.0)  # rotation closes segment 0
+    for k in range(5):
+        rig.camera.runs[1].write_frame((4000 + 40 * k) * ms)
+    rig.now[0] = 5 * S
+    rig.sup.shutdown()
+    session = rig.sup.session
+    assert session is not None
+    segments = read_json(session.path / "session.json")["segments"]
+    assert [(s["drops"], s["max_gap_ns"]) for s in segments] == [(2, 160 * ms), (0, 40 * ms)]
+    assert rig.incidents("frame drops") == [{"segment": 0, "drops": 2, "max_gap_ms": 160.0}]
+
+
+class CountingStore(SessionStore):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.recoveries = 0
+
+    def recover_interrupted(self, frames_writer: Any = None) -> list[str]:
+        self.recoveries += 1
+        return super().recover_interrupted(frames_writer)
+
+
+def test_recovery_waits_for_usable_storage(make_rig: Callable[..., Rig], tmp_path: Path) -> None:
+    left = SessionStore(tmp_path).create({}, "old-boot", ClockSample(0, 0, 0))
+    store = CountingStore(tmp_path)
+    missing = StorageCheck(False, 0, "recordings dir missing")
+    rig = make_rig(store=store, storage=ScriptedStorage(missing, PLENTY, missing, PLENTY))
+    rig.tick_at(0)
+    assert read_json(left.path / "session.json")["state"] == "in_progress"
+    rig.tick_at(0.5)  # storage usable: recover first, then open the new session
+    assert read_json(left.path / "session.json")["state"] == "interrupted"
+    new = rig.sup.session
+    assert new is not None and new.id != left.id
+    assert read_json(new.path / "session.json")["state"] == "in_progress"
+    rig.tick_at(1.0)
+    rig.tick_at(1.5)
+    assert store.recoveries == 1  # once per process
+
+
+def test_radar_silent_incident_once_per_streak(make_rig: Callable[..., Rig]) -> None:
+    rig = make_rig()
+    rig.tick_at(0)
+    rig.tick_at(5.5)
+    rig.tick_at(6.0)  # still silent: same streak
+    assert rig.state() == ("degraded", "radar missing")
+    rig.feed_radar()
+    rig.tick_at(6.1)
+    assert rig.state() == ("recording", "recording")
+    rig.tick_at(12.0)
+    rig.sup.shutdown()
+    assert rig.incidents("radar silent") == [{"silent_s": 5.5}, {"silent_s": 6.0}]

@@ -6,9 +6,9 @@ retrying the others with backoff (spec 6.2). Nothing it does deletes a recording
 
 from __future__ import annotations
 
-import csv
 import errno
 import logging
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +17,7 @@ from typing import Any, Callable, TypeVar
 import ld2451
 
 from radar_cam_recorder.camera.base import CameraRun, CameraSource
-from radar_cam_recorder.camera.metadata import parse_metadata, write_frames_csv
+from radar_cam_recorder.camera.metadata import parse_metadata, write_frames
 from radar_cam_recorder.clocks import Clock, boot_clock, boot_id, ntp_synced, sample_clocks
 from radar_cam_recorder.config import Config, config_to_dict
 from radar_cam_recorder.radar import RadarStream, SegmentedRadarWriter
@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _CAMERA_LOG_LINES = 20
+_DROP_FACTOR = 1.5  # a frame interval above 1.5 frame periods counts as a drop
 
 
 @dataclass
@@ -100,6 +101,8 @@ class Supervisor:
         self._camera_retry = _Backoff(cfg.retry_initial_s, cfg.retry_max_s)
         self._radar_retry = _Backoff(cfg.retry_initial_s, cfg.retry_max_s)
         self._radar_started = False
+        self._radar_silence_reported = False
+        self._recovered = False  # interrupted sessions: recovered once, when storage is usable
         self._camera_up_since_ns: int | None = None  # start of the current run of good runs
         self._meta_size = 0  # stall watchdog: meta size and when it last grew (boot clock)
         self._meta_grew_ns = 0
@@ -118,7 +121,7 @@ class Supervisor:
 
     def run(self, stop: threading.Event, tick_s: float = 0.5) -> None:
         try:
-            self._recover()
+            self._bus.announce()  # the status file exists from the start, even during recovery
             while not stop.is_set():
                 self.tick()
                 stop.wait(tick_s)
@@ -140,6 +143,8 @@ class Supervisor:
             self._next_check_ns = now + int(self._cfg.storage.check_interval_s * 1e9)
             if not self._storage_allows_recording():
                 return
+            if not self._recovered:
+                self._recover()
             if self._session is None:
                 self._try_open_session(now)
                 return
@@ -151,6 +156,7 @@ class Supervisor:
             raise error
         if now - self._segment_start_ns >= self._segment_ns():
             self._rotate(now)
+            now = self._clock()  # a rotation takes seconds (camera stop, frames CSV)
         elif self._pending_gap is not None:
             self._report_gap()
         self._check_camera(now)
@@ -217,6 +223,7 @@ class Supervisor:
         self._segment = None
         self._pending_gap = None
         self._radar_started = False
+        self._radar_silence_reported = False
         self._camera_up_since_ns = None
         self._camera_retry.reset()
         self._radar_retry.reset()
@@ -226,11 +233,20 @@ class Supervisor:
     # -- session and segments -------------------------------------------------------------
 
     def _recover(self) -> None:
-        check = self._check_storage()
-        if not check.usable:
-            log.warning("skipping recovery: %s", check.reason)
-            return
-        for session_id in self._store.recover_interrupted():
+        """Mark sessions left ``in_progress`` interrupted, before the first session opens.
+
+        Runs once per process, at the first storage check that passes; a storage error
+        (OSError) is raised to the storage policy and recovery is retried at the next check.
+        """
+        try:
+            marked = self._store.recover_interrupted()
+        except OSError:
+            raise
+        except Exception:
+            log.exception("cannot recover interrupted sessions")
+            marked = []
+        self._recovered = True
+        for session_id in marked:
             log.warning("session %s marked interrupted", session_id)
 
     def _check_storage(self) -> StorageCheck:
@@ -272,6 +288,7 @@ class Supervisor:
             setup={"notes": self._cfg.setup.notes, "geometry": dict(self._cfg.setup.geometry)},
             ntp_synced=ntp_synced(),
         )
+        now = self._clock()  # starting the devices takes time
         self._check_camera(now)
         self._update_state(now)
 
@@ -286,6 +303,10 @@ class Supervisor:
         retry = self._camera_retry
         if self._camera is None:
             return
+        # A reused segment must not keep the frames CSV of the run that left it empty: it
+        # would hide the new run's frames after a power cut (recovery and reader trust it).
+        for stale in (segment.frames, segment.frames.with_name(segment.frames.name + ".tmp")):
+            stale.unlink(missing_ok=True)
         try:
             self._camera_run = self._camera.start(segment)
         except OSError as exc:  # e.g. the rpicam-vid binary is missing
@@ -297,33 +318,68 @@ class Supervisor:
                 log.debug("camera start failed again: %s", exc)
             self._camera_up_since_ns = None
             return
+        started = self._clock()  # after the start returned: a slow start eats no grace
         if self._camera_up_since_ns is None:
-            self._camera_up_since_ns = now
+            self._camera_up_since_ns = started
         self._meta_size = 0
-        self._meta_grew_ns = now  # the grace period: one stall timeout after the start
+        self._meta_grew_ns = started  # the grace period: one stall timeout after the start
 
-    def _stop_camera(self) -> int:
-        """Stop the camera run and write the segment's frames CSV; return its frame count."""
+    def _stop_run(self) -> int:
+        """Stop the camera run (if any) and fsync its files; return the clock after the stop."""
         run, self._camera_run = self._camera_run, None
         if run is not None:
             run.stop(self._cfg.camera.stop_timeout_s)
+            if self._segment is not None:
+                _fsync_camera_files(self._segment)
+        return self._clock()
+
+    def _write_frames(self, segment: SegmentPaths) -> list[int]:
+        """Write the segment's frames CSV from its metadata; return the sensor timestamps."""
+        try:
+            text = segment.meta.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return []
+        frames = parse_metadata(text)
+        write_frames(frames, segment.frames)
+        stamps = (f.get("SensorTimestamp") for f in frames)
+        return [t for t in stamps if isinstance(t, int) and not isinstance(t, bool)]
+
+    def _stop_camera(self) -> list[int]:
+        """Stop the camera run and write the segment's frames CSV; return its timestamps."""
+        self._stop_run()
         segment = self._segment
-        if segment is None or not segment.meta.exists():
-            return 0
-        return write_frames_csv(segment.meta, segment.frames)
+        return self._write_frames(segment) if segment is not None else []
 
     def _rotate(self, now: int) -> None:
         session, old = self._session, self._segment
         assert session is not None and old is not None
-        frames = self._stop_camera()
+        end = self._stop_run()
         new = session.segment(old.index + 1)
         if self._radar is not None:
             self._writer.rotate(new.radar)
         start_ns = self._segment_start_ns
-        self._start_camera_segment(new, now)
-        session.add_segment(old.index, start_ns, now, frames)
+        # Start the next run first: parsing a long segment's metadata takes seconds on a Pi Zero.
+        self._start_camera_segment(new, end)
+        stamps = self._write_frames(old)
+        self._record_segment(session, old.index, start_ns, end, stamps)
         session.add_clock_sample(f"segment {new.index}", sample_clocks(boot=self._clock))
-        self._pending_gap = _PendingGap(new, _last_sensor_ts(old.frames))
+        self._pending_gap = _PendingGap(new, stamps[-1] if stamps else None)
+
+    def _record_segment(
+        self, session: Session, index: int, start_ns: int, end_ns: int, stamps: list[int]
+    ) -> None:
+        """Add the closed segment to ``session.json``; frame drops also become an incident."""
+        if self._camera is None:
+            session.add_segment(index, start_ns, end_ns, len(stamps))
+            return
+        drops, max_gap_ns = _frame_drops(stamps, self._cfg.camera.framerate)
+        session.add_segment(
+            index, start_ns, end_ns, len(stamps), drops=drops, max_gap_ns=max_gap_ns
+        )
+        if drops and max_gap_ns is not None:
+            self._bus.incident(
+                "frame drops", segment=index, drops=drops, max_gap_ms=max_gap_ns / 1e6
+            )
 
     def _report_gap(self) -> None:
         pending = self._pending_gap
@@ -399,7 +455,7 @@ class Supervisor:
             size = 0
         if size > self._meta_size:
             self._meta_size = size
-            self._meta_grew_ns = now
+            self._meta_grew_ns = max(self._meta_grew_ns, now)  # never before the start
             return None
         stalled_ns = now - self._meta_grew_ns
         return stalled_ns if stalled_ns >= self._cfg.camera.stall_timeout_s * 1e9 else None
@@ -410,7 +466,13 @@ class Supervisor:
         if not self._radar_started:
             if self._radar_retry.due(now):
                 self._start_radar(now, save=True)
-        elif not self._radar_silent(now):
+        elif self._radar_silent(now):
+            if not self._radar_silence_reported:  # once per silence streak
+                self._radar_silence_reported = True
+                silent_ns = self._radar.silent_for_ns(now, self._writer)
+                self._bus.incident("radar silent", silent_s=silent_ns / 1e9)
+        else:
+            self._radar_silence_reported = False
             self._radar_retry.reset()
 
     def _start_radar(self, now: int, *, save: bool) -> None:
@@ -456,15 +518,16 @@ class Supervisor:
         session, segment = self._session, self._segment
         if session is None:
             return
-        frames = _attempt("stop camera", self._stop_camera, 0)
+        stamps: list[int] = _attempt("stop camera", self._stop_camera, [])
         if self._radar is not None:
             _attempt("stop radar", self._radar.stop, None)
         _attempt("close radar file", self._writer.close, None)
         end = self._clock()
         if segment is not None:
+            start = self._segment_start_ns
             _attempt(
                 "record last segment",
-                lambda: session.add_segment(segment.index, self._segment_start_ns, end, frames),
+                lambda: self._record_segment(session, segment.index, start, end, stamps),
                 None,
             )
         _attempt(
@@ -511,15 +574,28 @@ def _tail(path: Path, lines: int) -> list[str]:
     return text.splitlines()[-lines:]
 
 
-def _last_sensor_ts(frames_csv: Path) -> int | None:
-    try:
-        with open(frames_csv, encoding="utf-8", newline="") as fh:
-            rows = list(csv.DictReader(fh))
-    except OSError:
-        return None
-    if not rows:
-        return None
-    try:
-        return int(rows[-1]["sensor_ts_ns"])
-    except (KeyError, ValueError):
-        return None
+def _frame_drops(stamps: list[int], framerate: float) -> tuple[int, int | None]:
+    """Count frame intervals above ``_DROP_FACTOR`` frame periods; also the longest interval."""
+    deltas = [b - a for a, b in zip(stamps, stamps[1:])]
+    if not deltas:
+        return 0, None
+    limit = _DROP_FACTOR * 1e9 / framerate
+    return sum(1 for d in deltas if d > limit), max(deltas)
+
+
+def _fsync_camera_files(segment: SegmentPaths) -> None:
+    """Best effort (spec 6.4): fsync the stopped run's files and the video dir, never raise."""
+    for path in (segment.video, segment.meta, segment.pts, segment.video.parent):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log.warning("cannot open %s to fsync it: %s", path, exc)
+            continue
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            log.warning("cannot fsync %s: %s", path, exc)
+        finally:
+            os.close(fd)
