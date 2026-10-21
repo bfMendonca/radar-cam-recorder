@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 class State(str, Enum):
     STARTING = "starting"
+    IDLE = "idle"
     WAITING_FOR_DEVICES = "waiting_for_devices"
     RECORDING = "recording"
     DEGRADED = "degraded"
