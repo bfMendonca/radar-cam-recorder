@@ -277,8 +277,7 @@ def test_shutdown_after_radar_start_fails(tmp_path: Path) -> None:
     sup = Supervisor(
         cfg, bus=bus, camera=FakeCamera(clock), radar=FailingRadar(cfg.radar), clock=clock
     )
-    with pytest.raises(OSError):
-        sup.tick()  # the failure policy is Task 9's
+    sup.tick()  # degraded, not an exception (see test_supervisor_failures.py)
     sup.shutdown()
     assert sup.session is not None
     data = read_json(sup.session.path / "session.json")
