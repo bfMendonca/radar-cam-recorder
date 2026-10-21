@@ -805,9 +805,9 @@ class CountingStore(SessionStore):
         super().__init__(root)
         self.recoveries = 0
 
-    def recover_interrupted(self, frames_writer: Any = None) -> list[str]:
+    def recover_interrupted(self, frames_writer: Any = None, heartbeat: Any = None) -> list[str]:
         self.recoveries += 1
-        return super().recover_interrupted(frames_writer)
+        return super().recover_interrupted(frames_writer, heartbeat)
 
 
 def test_recovery_waits_for_usable_storage(make_rig: Callable[..., Rig], tmp_path: Path) -> None:

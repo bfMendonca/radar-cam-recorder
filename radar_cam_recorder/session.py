@@ -184,12 +184,17 @@ class SessionStore:
             session._save()
         return session
 
-    def recover_interrupted(self, frames_writer: FramesWriter | None = None) -> list[str]:
+    def recover_interrupted(
+        self,
+        frames_writer: FramesWriter | None = None,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> list[str]:
         """Mark every ``in_progress`` session ``interrupted``.
 
         Missing ``frames.csv`` files, and stale ones with fewer rows than the metadata has
         frames, are derived from the metadata (default: ``write_frames_csv``); recorded data
-        files are never modified.
+        files are never modified. ``heartbeat`` (e.g. the systemd watchdog) is called once per
+        session and once per segment; its failure never affects recovery.
         """
         if frames_writer is None:
             from radar_cam_recorder.camera.metadata import write_frames_csv
@@ -209,7 +214,8 @@ class SessionStore:
                 continue
             if data.get("state") != SessionState.IN_PROGRESS.value:
                 continue
-            _write_missing_frames(child, frames_writer)
+            _beat(heartbeat)
+            _write_missing_frames(child, frames_writer, heartbeat)
             data["state"] = SessionState.INTERRUPTED.value
             data["stop_reason"] = INTERRUPTED_REASON
             data["last_radar_t_rx_ns"] = _last_radar_t_rx_ns(child)
@@ -244,9 +250,23 @@ def _highest_session_number(root: Path) -> int:
     return max(numbers)
 
 
-def _write_missing_frames(session_dir: Path, frames_writer: FramesWriter) -> None:
+def _beat(heartbeat: Callable[[], None] | None) -> None:
+    if heartbeat is None:
+        return
+    try:
+        heartbeat()
+    except Exception:
+        log.exception("recovery heartbeat failed")
+
+
+def _write_missing_frames(
+    session_dir: Path,
+    frames_writer: FramesWriter,
+    heartbeat: Callable[[], None] | None = None,
+) -> None:
     suffix = ".meta.json"
     for meta in sorted((session_dir / "video").glob(f"*{suffix}")):
+        _beat(heartbeat)
         frames = meta.with_name(meta.name[: -len(suffix)] + ".frames.csv")
         try:
             if frames.exists() and not _frames_csv_stale(meta, frames):

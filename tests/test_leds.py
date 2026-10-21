@@ -41,7 +41,7 @@ def event(state: State, reason: str = "", **detail: Any) -> StatusEvent:
         (State.STORAGE_MISSING, "s", {}, (P.SLOW_BLINK_INVERTED, P.SLOW_BLINK)),
         (State.ERROR, "e", {}, (P.OFF, P.ON)),
         (State.STOPPING, "s", {}, (P.FAST_BLINK, P.FAST_BLINK)),
-        (State.STOPPED, "s", {}, (P.OFF, P.OFF)),
+        (State.STOPPED, "s", {}, (P.FAST_BLINK, P.FAST_BLINK)),
     ],
 )
 def test_patterns_for(

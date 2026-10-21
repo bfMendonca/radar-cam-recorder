@@ -119,6 +119,7 @@ class Supervisor:
         self._radar_retry = _Backoff(cfg.retry_initial_s, cfg.retry_max_s)
         self._radar_started = False
         self._radar_silence_reported = False
+        self._heartbeat: Callable[[], None] | None = None  # set by run(): recovery beats it
         self._recovered = False  # interrupted sessions: recovered once, when storage is usable
         self._camera_up_since_ns: int | None = None  # start of the current run of good runs
         self._meta_size = 0  # stall watchdog: meta size and when it last grew (boot clock)
@@ -152,6 +153,7 @@ class Supervisor:
         tick_s: float = 0.5,
         heartbeat: Callable[[], None] | None = None,
     ) -> None:
+        self._heartbeat = heartbeat
         try:
             self._bus.announce()  # the status file exists from the start, even during recovery
             while not stop.is_set():
@@ -328,6 +330,9 @@ class Supervisor:
         if grew and self._session is not None:
             self._notify(self._on_progress)
 
+    def _beat(self) -> None:
+        self._notify(self._heartbeat)
+
     def _notify(self, callback: Callable[..., None] | None, *args: Any) -> None:
         """Run an observer callback (LEDs); its failure never affects recording."""
         if callback is None:
@@ -408,7 +413,7 @@ class Supervisor:
         (OSError) is raised to the storage policy and recovery is retried at the next check.
         """
         try:
-            marked = self._store.recover_interrupted()
+            marked = self._store.recover_interrupted(heartbeat=self._beat)
         except OSError:
             raise
         except Exception:

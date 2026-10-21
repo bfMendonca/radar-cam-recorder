@@ -64,6 +64,10 @@ def patterns_for(event: StatusEvent) -> tuple[Pattern, Pattern]:
         return Pattern.SLOW_BLINK_INVERTED, Pattern.SLOW_BLINK
     if s is State.ERROR:
         return Pattern.OFF, Pattern.ON
+    if s in (State.STOPPING, State.STOPPED):
+        # STOPPED blinks too: at poweroff it lasts until the kernel halts (the script turns
+        # the LEDs off after a plain service stop).
+        return Pattern.FAST_BLINK, Pattern.FAST_BLINK
     if s is State.STOPPING:
         return Pattern.FAST_BLINK, Pattern.FAST_BLINK
     return Pattern.OFF, Pattern.OFF

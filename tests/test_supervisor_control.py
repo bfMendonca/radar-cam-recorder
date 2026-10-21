@@ -347,3 +347,27 @@ def test_heartbeat_called_each_tick(make: Callable[..., tuple[Rig, Calls]]) -> N
 
     rig.sup.run(stop, 0.0, heartbeat=heartbeat)
     assert len(beats) == 3
+
+
+class BeatingStore(SessionStore):
+    """Beats the heartbeat it is given three times, as a long recovery would."""
+
+    def recover_interrupted(self, frames_writer: Any = None, heartbeat: Any = None) -> list[str]:
+        for _ in range(3):
+            heartbeat()
+        return []
+
+
+def test_run_heartbeat_reaches_recovery(
+    make: Callable[..., tuple[Rig, Calls]], tmp_path: Path
+) -> None:
+    rig, _ = make(store=BeatingStore(tmp_path))
+    stop = threading.Event()
+    beats: list[int] = []
+
+    def heartbeat() -> None:
+        beats.append(1)
+        stop.set()  # stop after the first tick
+
+    rig.sup.run(stop, 0.0, heartbeat=heartbeat)
+    assert len(beats) == 4  # three during recovery, one for the tick

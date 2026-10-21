@@ -268,3 +268,19 @@ def test_recovery_regenerates_stale_frames_csv(tmp_path: Path) -> None:
     store.recover_interrupted()
     assert stale.frames.read_text().splitlines() == [header.strip(), "0,5,,,", "1,9,,,"]
     assert current.frames.read_bytes() == current_before
+
+
+def test_recovery_heartbeats_per_segment_and_survives_failure(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    crashed = store.create({}, "b", SAMPLE)
+    for n in range(3):
+        crashed.segment(n).meta.write_text("{}")
+        crashed.segment(n).frames.write_text("existing")  # skipped by the writer, still counted
+    beats: list[int] = []
+
+    def heartbeat() -> None:
+        beats.append(1)
+        raise RuntimeError("watchdog socket gone")
+
+    assert store.recover_interrupted(heartbeat=heartbeat) == [crashed.id]
+    assert len(beats) >= 3 + 1  # every segment, plus the session
