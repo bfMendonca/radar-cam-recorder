@@ -188,3 +188,44 @@ def test_recovery_skips_unreadable_session_json(
         assert store.recover_interrupted() == [good.id]
     assert "s000099" in caplog.text
     assert (bad / "session.json").read_text() == "{trunc"
+
+
+def test_recovery_survives_failing_frames_writer(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create({}, "b", SAMPLE)
+    second = store.create({}, "b", SAMPLE)
+    first.segment(0).meta.write_text("{trunc")
+    second.segment(0).meta.write_text("{}")
+
+    def writer(meta: Path, frames: Path) -> int:
+        if meta.parent.parent == first.path:
+            raise ValueError("truncated meta")
+        frames.write_text("derived")
+        return 0
+
+    with caplog.at_level(logging.WARNING):
+        assert store.recover_interrupted(writer) == [first.id, second.id]
+    assert read_json(first.path / "session.json")["state"] == "interrupted"
+    assert read_json(second.path / "session.json")["state"] == "interrupted"
+    assert second.segment(0).frames.exists()
+    assert "truncated meta" in caplog.text
+
+
+def test_recovery_survives_unreadable_radar_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SessionStore(tmp_path)
+    crashed = store.create({}, "b", SAMPLE)
+    (crashed.path / "radar").mkdir()
+    (crashed.path / "radar" / "0000.csv").write_bytes(b"t_rx_ns,hex\n1,aa\n")
+
+    def boom(self: Path) -> bytes:
+        raise OSError("io error")
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    assert store.recover_interrupted() == [crashed.id]
+    data = read_json(crashed.path / "session.json")
+    assert data["state"] == "interrupted"
+    assert data["last_radar_t_rx_ns"] is None

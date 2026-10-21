@@ -199,15 +199,23 @@ def _write_missing_frames(session_dir: Path, frames_writer: FramesWriter) -> Non
     suffix = ".meta.json"
     for meta in sorted((session_dir / "video").glob(f"*{suffix}")):
         frames = meta.with_name(meta.name[: -len(suffix)] + ".frames.csv")
-        if not frames.exists():
+        if frames.exists():
+            continue
+        try:
             frames_writer(meta, frames)
+        except Exception as exc:
+            log.warning("cannot write frames for %s: %s", meta, exc)
 
 
 def _last_radar_t_rx_ns(session_dir: Path) -> int | None:
     files = sorted((session_dir / "radar").glob("*.csv"))
     if not files:
         return None
-    raw = files[-1].read_bytes()
+    try:
+        raw = files[-1].read_bytes()
+    except OSError as exc:
+        log.warning("cannot read radar file %s: %s", files[-1], exc)
+        return None
     # Everything after the last newline is a partial line; the first line is the header.
     lines = raw.split(b"\n")[:-1]
     for line in reversed(lines[1:]):
