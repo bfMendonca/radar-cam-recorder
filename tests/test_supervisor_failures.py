@@ -40,6 +40,7 @@ def make_cfg(root: Path, *, camera: dict[str, Any] | None = None, **recording: A
             # FakeCamera writes on the real clock while these tests jump the manual one:
             # keep the stall watchdog out of the way unless a test sets it.
             "camera": {"binary": str(FAKE_BIN), "stall_timeout_s": 1000.0, **(camera or {})},
+            "control": {"start_mode": "record"},
         }
     )
 

@@ -60,6 +60,7 @@ def make_cfg(root: Path, **camera: Any) -> Config:
             "storage": {"recordings_dir": str(root), "check_interval_s": 0.5},
             "camera": {"binary": str(FAKE_BIN), **camera},
             "setup": {"notes": "pole at the gate", "geometry": {"height_m": 2.5}},
+            "control": {"start_mode": "record"},
         }
     )
 
@@ -99,6 +100,7 @@ def build(
     camera: Callable[[Callable[[], int]], CameraSource | None] = lambda clock: FakeCamera(clock),
     cfg: Config | None = None,
     storage_check: Callable[[Path, bool], StorageCheck] | None = None,
+    **options: Any,
 ) -> Rig:
     now = [0]
 
@@ -110,7 +112,7 @@ def build(
     bus = StatusBus(clock)
     sink = ListSink()
     bus.add_sink(sink)
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = dict(options)
     if storage_check is not None:
         kwargs["storage_check"] = storage_check
     sup = Supervisor(

@@ -1,7 +1,8 @@
 """Supervisor: owns the session, rotates segments on the boot clock and stops in order.
 
 It also applies the storage policy (spec 6.1) and keeps recording with whatever devices work,
-retrying the others with backoff (spec 6.2). Nothing it does deletes a recording.
+retrying the others with backoff (spec 6.2). Nothing it does deletes a recording. Button
+commands (``split``, ``toggle``) and the idle state follow the LEDs/button design, section 4.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +35,18 @@ T = TypeVar("T")
 
 _CAMERA_LOG_LINES = 20
 _DROP_FACTOR = 1.5  # a frame interval above 1.5 frame periods counts as a drop
+_COMMANDS = ("split", "toggle")
+# Spec 4, press-by-state table: the states in which each command does something.
+_SPLIT_STATES = frozenset({State.RECORDING, State.DEGRADED})
+_STOP_STATES = frozenset(
+    {
+        State.RECORDING,
+        State.DEGRADED,
+        State.WAITING_FOR_DEVICES,
+        State.DISK_FULL,
+        State.STORAGE_MISSING,
+    }
+)
 
 
 @dataclass
@@ -80,6 +94,9 @@ class Supervisor:
         store: SessionStore | None = None,
         clock: Clock | None = None,
         storage_check: Callable[[Path, bool], StorageCheck] = check_storage,
+        warn_at_start: bool = False,
+        on_progress: Callable[[], None] | None = None,
+        on_command: Callable[[str, bool], None] | None = None,
     ) -> None:
         self._cfg = cfg
         self._bus = bus
@@ -108,6 +125,16 @@ class Supervisor:
         self._meta_grew_ns = 0
         self._shutdown_lock = threading.Lock()
         self._shut_down = False
+        # Idle mode and commands (spec 4).
+        self._want_recording = cfg.control.start_mode == "record"
+        self._problem = warn_at_start  # the previous run ended badly: idle shows a warning
+        self._on_progress = on_progress
+        self._on_command = on_command
+        self._commands: queue.SimpleQueue[tuple[str, int]] = queue.SimpleQueue()
+        self._command_end_ns: int | None = None  # boot clock at the end of the last command
+        self._start_pending = False  # a start ends after the tick's step opened the session
+        self._progress_meta: tuple[Path | None, int] = (None, 0)
+        self._progress_reads = 0
         bus.add_sink(self)
 
     @property
@@ -119,28 +146,52 @@ class Supervisor:
         if session is not None:
             session.append_event(event)
 
-    def run(self, stop: threading.Event, tick_s: float = 0.5) -> None:
+    def run(
+        self,
+        stop: threading.Event,
+        tick_s: float = 0.5,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> None:
         try:
             self._bus.announce()  # the status file exists from the start, even during recovery
             while not stop.is_set():
                 self.tick()
+                self._notify(heartbeat)  # e.g. the systemd watchdog: once per tick
                 stop.wait(tick_s)
         finally:
             self.shutdown()
+
+    def request(self, command: str) -> None:
+        """Queue ``"split"`` or ``"toggle"`` for the next tick.
+
+        Safe from signal handlers and other threads: it only reads the clock and puts on a
+        :class:`queue.SimpleQueue`.
+        """
+        if command not in _COMMANDS:
+            raise ValueError(f"unknown command {command!r}")
+        self._commands.put((command, self._clock()))
 
     def tick(self) -> None:
         """One supervision step; storage errors become states, never exceptions."""
         if self._shut_down:
             return
-        now = self._clock()
         try:
-            self._step(now)
+            self._run_commands()
+            self._step(self._clock())
         except OSError as exc:
             self._storage_failed(exc)
+        finally:
+            if self._start_pending:
+                self._start_pending = False
+                self._command_end_ns = self._clock()
+        self._report_progress()
 
     def _step(self, now: int) -> None:
         if now >= self._next_check_ns:
             self._next_check_ns = now + int(self._cfg.storage.check_interval_s * 1e9)
+            if not self._want_recording:
+                self._idle_storage_check()
+                return
             if not self._storage_allows_recording():
                 return
             if not self._recovered:
@@ -183,6 +234,109 @@ class Supervisor:
             self._bus.set_state(State.STOPPED, reason)
             self._bus.close()
 
+    # -- commands and idle mode (spec 4) -------------------------------------------------
+
+    def _run_commands(self) -> None:
+        """Run queued commands; after an accepted one, the rest wait for the next tick.
+
+        The next tick compares their arrival with the end of that command, so a press made
+        while a split, start or stop was still running is rejected.
+        """
+        while True:
+            try:
+                command, arrival_ns = self._commands.get_nowait()
+            except queue.Empty:
+                return
+            if self._run_command(command, arrival_ns):
+                return
+
+    def _run_command(self, command: str, arrival_ns: int) -> bool:
+        """Accept or reject one command, report it and run it; return True if accepted."""
+        self._problem = False  # any press, accepted or not, acknowledges the warning
+        state = self._bus.current.state
+        busy = self._command_end_ns is not None and arrival_ns < self._command_end_ns
+        if busy:
+            accepted = False
+        elif command == "split":
+            accepted = state in _SPLIT_STATES
+        else:
+            accepted = state is State.IDLE or state in _STOP_STATES
+        log.info("command %s %s (%s)", command, "accepted" if accepted else "rejected", state.value)
+        self._notify(self._on_command, command, accepted)
+        if not accepted:
+            if state is State.IDLE:
+                self._set_idle()  # drop the warning
+            return False
+        if command == "split":
+            try:
+                self._split()
+            finally:
+                self._command_end_ns = self._clock()
+        elif state is State.IDLE:
+            self._want_recording = True
+            self._next_check_ns = self._clock()  # this tick's storage check opens the session
+            self._start_pending = True
+        else:
+            try:
+                self._stop_to_idle()
+            finally:
+                self._command_end_ns = self._clock()
+        return True
+
+    def _stop_to_idle(self) -> None:
+        self._want_recording = False  # storage recovery must not reopen a session
+        self._bus.set_state(State.STOPPING, "stopping recording")
+        self._end_session("stopped by button")
+        self._set_idle()
+
+    def _split(self) -> None:
+        """Close the session ``complete`` and open a new one at once (spec 4)."""
+        last_ts = self._end_session("split by button")
+        self._try_open_session(self._clock())
+        if self._session is not None:
+            self._pending_gap = _PendingGap(self._session.segment(0), last_ts)
+
+    def _idle_storage_check(self) -> None:
+        """While idle, the storage check only recovers interrupted sessions; no state change."""
+        if not self._recovered and self._check_storage().usable:
+            self._recover()
+        self._set_idle()
+
+    def _set_idle(self) -> None:
+        if self._problem:
+            self._bus.set_state(State.IDLE, "idle after a problem", problem=True)
+        else:
+            self._bus.set_state(State.IDLE, "idle")
+
+    def _report_progress(self) -> None:
+        """Call ``on_progress`` when a session is open and camera or radar data grew."""
+        reads = self._writer.reads
+        grew = reads > self._progress_reads
+        self._progress_reads = reads
+        segment = self._segment if self._session is not None else None
+        meta = segment.meta if segment is not None else None
+        size = 0
+        if meta is not None:
+            try:
+                size = meta.stat().st_size
+            except OSError:
+                size = 0
+        last_meta, last_size = self._progress_meta
+        if meta is not None and size > (last_size if meta == last_meta else 0):
+            grew = True
+        self._progress_meta = (meta, size)
+        if grew and self._session is not None:
+            self._notify(self._on_progress)
+
+    def _notify(self, callback: Callable[..., None] | None, *args: Any) -> None:
+        """Run an observer callback (LEDs); its failure never affects recording."""
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            log.exception("observer callback failed")
+
     # -- storage policy -------------------------------------------------------------------
 
     def _storage_allows_recording(self) -> bool:
@@ -200,6 +354,11 @@ class Supervisor:
         return allowed
 
     def _storage_failed(self, exc: OSError) -> None:
+        if not self._want_recording:
+            # Idle: only recovery touches the disk; it is retried at the next check.
+            log.debug("storage error while idle: %s", exc)
+            self._set_idle()
+            return
         if exc.errno == errno.ENOSPC:
             self._out_of_space = True
             reason = "disk full"
@@ -218,7 +377,17 @@ class Supervisor:
         changed = self._bus.set_state(state, reason)
         if self._session is None:
             return changed
-        self._close_session(SessionState.COMPLETE, reason)
+        self._end_session(reason)
+        return True
+
+    def _end_session(self, reason: str) -> int | None:
+        """Close the session ``complete`` and reset the per-session fields.
+
+        Returns the last camera sensor timestamp of the closed session, if any.
+        """
+        if self._session is None:
+            return None
+        last_ts = self._close_session(SessionState.COMPLETE, reason)
         self._session = None
         self._segment = None
         self._pending_gap = None
@@ -228,7 +397,7 @@ class Supervisor:
         self._camera_retry.reset()
         self._radar_retry.reset()
         self._writer.take_error()  # belongs to the closed session
-        return True
+        return last_ts
 
     # -- session and segments -------------------------------------------------------------
 
@@ -246,6 +415,8 @@ class Supervisor:
             log.exception("cannot recover interrupted sessions")
             marked = []
         self._recovered = True
+        if marked:
+            self._problem = True  # the previous run ended while recording
         for session_id in marked:
             log.warning("session %s marked interrupted", session_id)
 
@@ -513,11 +684,14 @@ class Supervisor:
         else:
             self._bus.set_state(State.RECORDING, "recording")
 
-    def _close_session(self, state: SessionState, reason: str) -> None:
-        """Close everything in spec 6.3 order; a failing step is logged and the rest still run."""
+    def _close_session(self, state: SessionState, reason: str) -> int | None:
+        """Close everything in spec 6.3 order; a failing step is logged and the rest still run.
+
+        Returns the last camera sensor timestamp of the session, if any.
+        """
         session, segment = self._session, self._segment
         if session is None:
-            return
+            return None
         stamps: list[int] = _attempt("stop camera", self._stop_camera, [])
         if self._radar is not None:
             _attempt("stop radar", self._radar.stop, None)
@@ -535,6 +709,7 @@ class Supervisor:
             lambda: session.close(state, reason, sample_clocks(boot=self._clock)),
             None,
         )
+        return stamps[-1] if stamps else None
 
 
 def _attempt(what: str, fn: Callable[[], T], default: T) -> T:

@@ -28,6 +28,9 @@ recordings_dir = "{tmp_path / "rec"}"
 stop_below_mb = 1
 resume_above_mb = 2
 check_interval_s = 1.0
+
+[control]
+start_mode = "record"
 """
     )
     return cfg
