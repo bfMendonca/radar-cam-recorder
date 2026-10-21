@@ -77,18 +77,112 @@ journalctl -u radar-cam-recorder -f
 radar-cam-recorder status --config /etc/radar-cam-recorder.toml
 ```
 
-Adjust `User=`, `WorkingDirectory=` and `ExecStart=` to your install path.
+The unit is `Type=notify` with a 30 s watchdog and an `ExecStopPost` LED script; see
+"Status LEDs and button". Adjust `User=`, `WorkingDirectory=` and `ExecStart=` to your install path.
 
 `KillMode=mixed` matters: with the default (control-group) mode systemd would send
 SIGTERM to `rpicam-vid` as well, preempting the recorder's own clean stop (SIGINT, so
 the video file is finalised). With `mixed` only the recorder gets SIGTERM; any leftover
 process is SIGKILLed after `TimeoutStopSec`.
 
+## Status LEDs and button
+
+A green and a red LED and one push button on the Pi's GPIO header show the recorder state
+and control it without a laptop. All are kernel devices (no Python GPIO library).
+
+### Wiring
+
+| Part | GPIO | Header pin | Wiring |
+| --- | --- | --- | --- |
+| Green LED | 17 | 11 | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 9) |
+| Red LED | 27 | 13 | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 14) |
+| Button | 3 | 5 | GPIO 3 -> button -> GND (pin 6) |
+
+GPIO 3 has a fixed on-board pull-up, and grounding it wakes a halted Pi, so the same
+button powers the Pi back on after a long-press shutdown (to be confirmed by the hands-on
+check in `docs/pi-acceptance.md`). Consequence: keep `i2c_arm` disabled in `config.txt`.
+
+### Kernel setup (once, on the Pi)
+
+Files under `deploy/`; the logind drop-in goes first:
+
+```sh
+sudo install -D -m 644 deploy/logind-rcr-button.conf /etc/systemd/logind.conf.d/logind-rcr-button.conf
+sudo systemctl restart systemd-logind
+sudo install -m 644 deploy/rcr-leds.conf /etc/modules-load.d/rcr-leds.conf
+sudo install -m 644 deploy/99-rcr-leds.rules /etc/udev/rules.d/99-rcr-leds.rules
+sudo cp /boot/firmware/config.txt /boot/firmware/config.txt.bak-rcr
+grep -q rcr-green /boot/firmware/config.txt || \
+  sudo sh -c 'cat deploy/config.txt.snippet >> /boot/firmware/config.txt'
+sudo reboot
+```
+
+- `config.txt.snippet`: two `gpio-led` overlays (`rcr-green` on GPIO 17 with a 1 Hz `timer`
+  blink from kernel start, `rcr-red` on GPIO 27) and a `gpio-key` overlay on GPIO 3
+  (active low, pull-up, `KEY_POWER`). The input device is named `button@3`.
+- `rcr-leds.conf` loads the `ledtrig-pattern` module.
+- `99-rcr-leds.rules` lets group `gpio` write the `rcr-*` LED attributes (the service user
+  must be in groups `gpio` and `input`).
+- `logind-rcr-button.conf`: `HandlePowerKey=ignore`, `HandlePowerKeyLongPress=poweroff`.
+  logind powers the Pi off after a 5 s hold by itself, even if the recorder is hung.
+- `rcr-leds-stop.sh` is the unit's `ExecStopPost`: red solid after a crash or kill
+  (`$SERVICE_RESULT` not `success`); after a clean stop both LEDs go off, except during
+  system poweroff, when the "shutting down" blink is left running.
+
+The unit is `Type=notify` with `WatchdogSec=30`: the recorder sends `READY=1` and a
+watchdog ping each tick, and a hung main loop is killed and restarted by systemd. Copy the
+updated unit as in "Service" above.
+
+### Modes and the button
+
+The recorder starts **idle** (running, not recording) on every start; set
+`[control] start_mode = "record"` to record at start for unattended use.
+
+| Press | In idle | While recording or degraded | Waiting for devices, disk full, storage missing |
+| --- | --- | --- | --- |
+| Single | rejected | close the session (`complete`, safe to copy) and open a new one | rejected |
+| Double | start recording | stop, back to idle | stop, back to idle |
+| Hold 5 s | Pi powers off (done by logind) | same | same |
+
+In `starting`, `stopping` and `error`, or while a split, start or stop is still running,
+presses are rejected. Single < 1 s with no second press within 400 ms; double = a second
+press within 400 ms; holds between 1 s and 5 s are ignored. Timings are in `[control]`.
+
+The same commands as signals, for SSH and testing (`SIGUSR1` = single, `SIGUSR2` =
+double). Always use `--kill-whom=main`: a plain `systemctl kill` also signals
+`rpicam-vid`, and SIGUSR2 makes it quit.
+
+```sh
+sudo systemctl kill --kill-whom=main -s USR1 radar-cam-recorder   # split
+sudo systemctl kill --kill-whom=main -s USR2 radar-cam-recorder   # start / stop
+```
+
+### LED meaning
+
+| Meaning (state) | Green | Red |
+| --- | --- | --- |
+| Booting / starting | fast blink | off |
+| Idle, ready | steady on | off |
+| Idle after a problem (crash, kill, watchdog, interrupted session) until the next press | steady on | slow blink |
+| Recording, all OK | pulses while data reaches the disk | off |
+| Recording, a device missing (`degraded`) | pulses while data arrives | 1 blink per cycle = camera missing, 2 = radar missing |
+| Waiting for both devices | off | 1 + 2 blinks alternating |
+| Storage full or missing | slow blink, alternating with red | slow blink |
+| Broken, needs a laptop (`error`, crash) | off | solid |
+| Shutting down (`stopping`, and during poweroff; also shown when the recorder is `stopped`) | fast blink | fast blink |
+| Off: safe to unplug | off | off |
+
+Green never claims "recording" without data: the recorder re-arms a finite kernel pulse
+whenever the camera or radar makes progress, so green goes dark within 5 s if the recorder
+freezes or dies. Brief overlays: press accepted = both LEDs flash once; rejected = red
+flashes twice; hold past 5 s = red fast blink until power-off. LEDs and button are optional:
+a missing device is logged once and ignored.
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `run [--config PATH] [-v]` | Record until SIGTERM/SIGINT; exit 0 after a signal stop, 1 on config error or crash. |
+| `run [--config PATH] [-v]` | Idle until a command (or record at start with `start_mode = "record"`); runs until SIGTERM/SIGINT; exit 0 after a signal stop, 1 on config error or crash. |
 | `status [--config PATH]` | Print the live status file (`recording.status_file`); exit 1 if missing. |
 | `check-config [--config PATH]` | Print the parsed configuration as JSON. |
 | `inspect SESSION_DIR [--json]` | Print the session summary (frames, fps, gaps, radar reports, overlap). |

@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Status LEDs (green GPIO 17, red GPIO 27) and one button (GPIO 3) through kernel devices:
+  `gpio-led` / `gpio-key` overlays, udev rule, logind long-press poweroff.
+- Idle mode: the recorder starts idle; `[control] start_mode = "record"` restores
+  recording at start. Single press splits the session, double press starts or stops.
+- `SIGUSR1` (split) and `SIGUSR2` (toggle) for remote control.
+- Systemd `Type=notify` with a 30 s watchdog, and `ExecStopPost` script showing a crash
+  on the red LED.
+- `[control]` and `[leds]` config tables.
+- Pi acceptance for the LEDs and button in `docs/pi-acceptance.md`.
+
 ## [0.1.0] - 2026-10-20
 
 ### Added

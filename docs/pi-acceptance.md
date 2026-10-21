@@ -377,3 +377,102 @@ show `recording` in a new session, the previous session `interrupted` in its
 
 `~/accept/` (about 180 MB of test recordings and configs) can be deleted. Service sessions
 `s000001`-`s000007` are in `~/recordings` (never deleted).
+
+# LEDs and button: acceptance (2026-10-21, branch `feat/leds-button`)
+
+Pi: homegateway (Zero W, kernel 6.12.25+rpt-rpi-v6, systemd 252). The kernel setup from the
+spike (`docs/leds-button-spike.md`) was already installed. No LEDs or button are wired:
+LED levels were read with `pinctrl get 17` / `pinctrl get 27` (`hi`/`lo`, sampled every
+0.25 s), and the button was driven with the signals `SIGUSR1` (single press) and `SIGUSR2`
+(double press), always `sudo systemctl kill --kill-whom=main -s USR1|USR2 radar-cam-recorder`.
+
+## Deploy
+
+```
+rsync -a --exclude .venv --exclude .git --exclude recordings/ --exclude .superpowers/ \
+  --exclude __pycache__ --exclude '*.egg-info' ./ homegateway:workspace/radar-cam-recorder/
+ssh homegateway 'cd ~/workspace/radar-cam-recorder && UV_PYTHON=/usr/bin/python3 uv sync'
+  -> Resolved 28 packages / Checked 11 packages
+sudo cp deploy/radar-cam-recorder.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+  && sudo systemctl restart radar-cam-recorder
+systemctl show radar-cam-recorder -p Type,WatchdogUSec,MainPID  -> Type=notify WatchdogUSec=30s
+```
+
+`/etc/radar-cam-recorder.toml` has no `[control]`/`[leds]` tables: the defaults apply
+(`start_mode = "idle"`, `button_name = "button@3"`). Test suite on the Pi
+(`uv run pytest -q`): **229 passed in 68.10 s**, 0 failures.
+
+## Software-only checks
+
+1. Start -> idle: PASS. After the restart: `status` -> `{"state": "idle", "reason": "idle"}`;
+   `pinctrl get 17` hi in 8/8 samples (green steady), `pinctrl get 27` lo (red off).
+2. `USR2` -> recording: PASS. Journal `command toggle accepted (idle)`, then
+   `state: recording`; session `s000019` `in_progress`. Green: mostly lo with short hi pulses
+   (`G17: lo hi lo lo lo lo lo lo lo lo lo lo hi lo lo lo`), red lo.
+3. `USR1` -> split: PASS. `s000019` -> `complete` (`stop_reason = "split by button"`), a new
+   session `s000020` `in_progress`; journal `command split accepted (recording)`. Measured
+   gap across the split (`segment gap` incident in `s000020`): **gap_ns = 4 725 070 000 (4.73 s)**,
+   from the last frame of `s000019` (sensor ts 3548.334 s) to the first of `s000020`
+   (3553.059 s). Slightly above the 3-4 s rotation gap, as the spec predicted.
+4. `USR2` -> idle: PASS. `s000020` `complete` (`stop_reason = "stopped by button"`),
+   status `idle`, green steady hi, red lo.
+5. Green dark within 5 s of `SIGSTOP`: PASS. Recording (green pulsing), then
+   `systemctl kill --kill-whom=main -s STOP` at 23:59:40. G17 was lo in every 1 s sample from
+   t+0 to t+15 s and in a further 12 x 0.25 s samples; no pulse after the stop (the pulse is a
+   finite kernel pattern, so it ends on its own; the sampling cannot catch a single short pulse
+   at t+0).
+6. Watchdog restart: PASS. `00:00:10 Watchdog timeout (limit 30s)!` (30 s after the stop),
+   SIGABRT, `Failed with result 'watchdog'`, restart after 5 s, new pid 6692 (old 4615), no
+   stray `rpicam-vid`. The session in progress, `s000021`, was marked `interrupted`; status:
+   `{"state": "idle", "reason": "idle after a problem", "detail": {"problem": true}}`. Levels:
+   green hi steady, red alternating (`lo lo lo hi hi lo lo hi hi lo lo hi`, 0.25 s samples: slow blink).
+7. `SIGKILL` of the recorder: PASS. `systemctl kill --kill-whom=main -s KILL` at 00:00:54:
+   `pinctrl` right after: G17 lo, **R27 hi** for the whole 5 s `activating (auto-restart)` window
+   (ExecStopPost: red solid, green off); after the restart `idle after a problem` again with
+   green hi and red blinking. `NRestarts=2`.
+8. Clean stop (R8): `sudo systemctl stop` -> G17 lo and R27 lo (ExecStopPost turned both LEDs
+   off). `systemctl start` afterwards: `idle` (no warning, as the last state was `stopped`).
+
+Final state: service `active`, status `idle`, no recorder session `in_progress`, no stray
+`rpicam-vid`.
+
+Observations (not product changes):
+
+- Camera flake: the first `rpicam-vid` start after a period without the camera often times
+  out (`Camera frontend has timed out!`, reproduced by hand outside the recorder: first run
+  failed, next two worked). In the first two recording runs this produced `camera stalled`
+  (stall watchdog, detected at about 10.2 s), then `degraded` / `camera missing` for about
+  1-5 s and `recording` again; those sessions (`s000017`, `s000018`) have 0 video frames
+  because they were closed within seconds after the recovery. The measured split above
+  (`s000019` -> `s000020`) had a healthy camera (854 frames, 109 drops, max 120 ms).
+- The earlier service run showed `degraded` / `recording` flapping about every 70 s before the
+  redeploy (journal 23:45-23:47): the same camera flake.
+- Test sessions `s000017`-`s000021` remain on disk. `s000021` is `interrupted` (watchdog
+  test); `s000014` was already `interrupted` before this work.
+
+## Hands-on checks: PENDING (need the parts wired, spec section 7)
+
+Wire as in the README (green GPIO 17 / pin 11, red GPIO 27 / pin 13, button GPIO 3 / pin 5,
+GND pins 9, 14, 6). Run `radar-cam-recorder status --config /etc/radar-cam-recorder.toml`
+and `journalctl -u radar-cam-recorder -f` over SSH while you test.
+
+1. Boot: power the Pi. Green fast-blinks from power-on, then steady (idle), red off.
+2. Double press: recording starts, green pulses, a new session appears and is `in_progress`.
+   Double press again: that session becomes `complete`, back to idle.
+3. Single press while recording: the session closes `complete` and a new one opens; run the
+   README `rsync` copy command while recording continues and check the closed session arrives.
+4. Long press, 5 s, with the recorder frozen (`sudo systemctl kill --kill-whom=main -s STOP
+   radar-cam-recorder`). The red LED fast-blinks once past 5 s? (only when the recorder runs;
+   frozen, it cannot). Expected: the Pi powers off (logind), the LEDs go dark (to confirm that
+   `gpio-leds` turns them off at halt, R8), and then one press on the button powers it back on
+   (wake from halt on GPIO 3). Also time the hold: logind's threshold is 5 s from memory.
+   Repeat once with the recorder healthy: red fast blink after 5 s, then poweroff.
+5. Recording, then `sudo systemctl kill --kill-whom=main -s STOP radar-cam-recorder`: green
+   dark within 5 s; after about 30 s the watchdog restarts the recorder; it returns idle with
+   the red slow blink; a button press (single, rejected) clears it.
+6. `sudo systemctl kill --kill-whom=main -s KILL radar-cam-recorder`: red solid for the 5 s
+   restart delay, then idle with the red warning blink.
+7. Unplug an LED or the button (power off first for the wiring), start the recorder: it keeps
+   working (signals still toggle recording) and the journal logs the missing device once.
+
+Not to run remotely: `poweroff`, `halt`, `shutdown -h`; nobody can power the Pi back on.
