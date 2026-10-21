@@ -21,6 +21,11 @@ $ pinctrl get 27     # lo
 ```
 `delay_on` / `delay_off` of the timer trigger stay root-only (not needed). `max_brightness` is 1.
 
+## Decisions for later tasks
+
+- Only the `pattern` trigger is supported for runtime LED control (plus `none` + `brightness`). The `transient` trigger is deliberately unsupported: `pattern` covers every pattern including the finite green pulse (finite `repeat`), while transient would need extra udev-managed attributes and another module in rcr-leds.conf.
+- Boot blink: the overlay's `trigger=timer` gives the default 500 ms on / 500 ms off (1 Hz), and `delay_on`/`delay_off` are root-only. We keep 1 Hz at kernel boot; the recorder's own "starting" fast blink (pattern trigger) takes over once it runs.
+
 ## Pattern trigger (as bmendonca, groups include gpio, no sudo)
 
 - `echo pattern > trigger` works. The kernel then creates `pattern` and `repeat` as root:root 0644; the udev "change" rule fixes them to root:gpio 0664 **asynchronously**. Measured: `pattern` writable after about 60 ms; `repeat` can lag a little more. A write right after switching the trigger can fail with `Permission denied` (it did in the first test). Task 4 must retry/poll (for example up to 1 s) for `os.access(path, os.W_OK)` after setting the trigger.
