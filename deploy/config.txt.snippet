@@ -1,0 +1,4 @@
+# radar-cam-recorder: status LEDs and button (append to /boot/firmware/config.txt)
+dtoverlay=gpio-led,gpio=17,label=rcr-green,trigger=timer
+dtoverlay=gpio-led,gpio=27,label=rcr-red
+dtoverlay=gpio-key,gpio=3,active_low=1,gpio_pull=up,keycode=116,label=rcr-button

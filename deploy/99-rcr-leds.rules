@@ -1,0 +1,3 @@
+# Let group gpio drive the rcr-* LEDs. The kernel creates "pattern"/"repeat"
+# only when the pattern trigger is set (a "change" event), so re-apply then.
+ACTION=="add|change", SUBSYSTEM=="leds", KERNEL=="rcr-*", RUN+="/bin/sh -c 'for f in trigger brightness pattern repeat; do [ -e /sys%p/$$f ] && chgrp gpio /sys%p/$$f && chmod g+w /sys%p/$$f; done; true'"
