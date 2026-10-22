@@ -236,3 +236,39 @@ def test_sysfs_denied_retries_only_after_switch(
     out.pulse()
     out.show(P.SLOW_BLINK)
     assert len(sleeps) == first  # later calls fail immediately
+
+
+def test_sysfs_failed_write_forgets_last(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    d = led(tmp_path, "rcr-red")
+    out = SysfsLed("rcr-red", tmp_path, sleep=lambda _s: None)
+    out.show(P.SLOW_BLINK)
+    real = Path.write_text
+    broken = {"on": True}
+
+    def flaky(self: Path, data: str, *a: Any, **k: Any) -> int:
+        if self.name == "brightness" and broken["on"]:
+            raise OSError(5, "Input/output error")
+        return real(self, data, *a, **k)
+
+    monkeypatch.setattr(Path, "write_text", flaky)
+    out.show(P.ON)  # the trigger switched to "none", then the brightness write failed
+    assert (d / "trigger").read_text() == "none"
+    broken["on"] = False
+    out.show(P.SLOW_BLINK)  # must not be skipped as "already shown"
+    assert (d / "trigger").read_text() == "pattern"
+
+
+def test_long_armed_clears_if_still_alive(caplog: pytest.LogCaptureFixture) -> None:
+    green, red, clock = FakeLed(), FakeLed(), Manual()
+    ctl = LedController(green, red, clock, flash_delay=0.01, long_armed_timeout=0.05)
+    ctl.show_state(event(State.ERROR))
+    ctl.flash("long_armed")
+    assert red.shown[-1] == P.FAST_BLINK
+    ctl.flash("accepted")  # still armed: ignored
+    assert P.ON not in green.shown
+    assert wait_until(lambda: red.shown[-1] == P.ON)  # the ERROR state pattern again
+    assert any(
+        r.levelno == logging.WARNING and "long press" in r.getMessage() for r in caplog.records
+    )
+    ctl.flash("accepted")  # disarmed: flashes work again
+    assert green.shown[-1] == P.ON

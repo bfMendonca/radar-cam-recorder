@@ -42,6 +42,9 @@ PULSE_REPEAT = 2  # 4 s in total, then dark on its own
 PULSE_CYCLE_NS = 2_000_000_000
 FLASH_SECONDS = 0.2
 RETRY_SECONDS = 1.0
+# logind powers off after a 5 s hold; if the process is still alive this long after the red
+# "long_armed" blink started, the poweroff did not happen: drop the overlay.
+LONG_ARMED_TIMEOUT_SECONDS = 10.0
 
 
 def patterns_for(event: StatusEvent) -> tuple[Pattern, Pattern]:
@@ -67,8 +70,6 @@ def patterns_for(event: StatusEvent) -> tuple[Pattern, Pattern]:
     if s in (State.STOPPING, State.STOPPED):
         # STOPPED blinks too: at poweroff it lasts until the kernel halts (the script turns
         # the LEDs off after a plain service stop).
-        return Pattern.FAST_BLINK, Pattern.FAST_BLINK
-    if s is State.STOPPING:
         return Pattern.FAST_BLINK, Pattern.FAST_BLINK
     return Pattern.OFF, Pattern.OFF
 
@@ -137,6 +138,9 @@ class SysfsLed:
                 self._failed(e)
 
     def _failed(self, e: OSError) -> None:
+        # The device may now be half-switched (e.g. trigger changed, brightness not): forget the
+        # last pattern so the next show() writes again instead of being skipped.
+        self._last = None
         if not self._warned:
             self._warned = True
             log.warning("LED %s: %s", self._name, e)
@@ -185,10 +189,12 @@ class LedController:
         red: LedOutput,
         clock: Clock,
         flash_delay: float = FLASH_SECONDS,
+        long_armed_timeout: float = LONG_ARMED_TIMEOUT_SECONDS,
     ) -> None:
         self._leds = {"green": green, "red": red}
         self._clock = clock
         self._flash_delay = flash_delay
+        self._long_armed_timeout = long_armed_timeout
         self._lock = threading.Lock()
         self._state = {"green": Pattern.OFF, "red": Pattern.OFF}
         self._overlay: dict[str, Pattern] = {}
@@ -217,7 +223,7 @@ class LedController:
     def flash(self, kind: str) -> None:
         with self._lock:
             if self._sticky:
-                # long_armed lasts until the process ends; green keeps following the state.
+                # long_armed lasts until poweroff (or its timeout); green follows the state.
                 return
             hold = self._flash_delay
             if kind == "accepted":
@@ -235,20 +241,35 @@ class LedController:
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
-            if not self._sticky:
+            if self._sticky:
+                timer = threading.Timer(self._long_armed_timeout, self._disarm)
+            else:
                 timer = threading.Timer(hold, self._restore)
-                timer.daemon = True
-                self._timer = timer
-                timer.start()
+            timer.daemon = True
+            self._timer = timer
+            timer.start()
+
+    def _disarm(self) -> None:
+        with self._lock:
+            if not self._sticky:
+                return
+            self._sticky = False
+            log.warning(
+                "long press: still running %.0f s after arming, poweroff did not happen",
+                self._long_armed_timeout,
+            )
+            self._clear_overlay()
 
     def _restore(self) -> None:
         with self._lock:
-            if self._sticky:
-                return
-            self._overlay = {}
-            self._timer = None
-            self._last_pulse_ns = None
-            self._apply()
+            if not self._sticky:
+                self._clear_overlay()
+
+    def _clear_overlay(self) -> None:
+        self._overlay = {}
+        self._timer = None
+        self._last_pulse_ns = None
+        self._apply()
 
     def _apply(self) -> None:
         for name, led in self._leds.items():
