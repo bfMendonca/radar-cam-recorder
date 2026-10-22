@@ -5,22 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-
-- **Behaviour change:** the recorder now starts idle on every start (power-on, crash and
-  watchdog restarts too) instead of recording. An unattended install stops recording after
-  upgrading until `[control] start_mode = "record"` is added to
-  `/etc/radar-cam-recorder.toml` and the service is restarted (see the README).
-
 ### Added
 
 - Status LEDs (green GPIO 17, red GPIO 27) and one button (GPIO 3) through kernel devices:
   `gpio-led` / `gpio-key` overlays, udev rule, logind long-press poweroff.
-- Idle mode: the recorder starts idle; `[control] start_mode = "record"` restores
-  recording at start. Single press splits the session, double press starts or stops.
+- `[control] start_mode`: `"record"` (default, as before: record at start) or `"idle"`
+  (start idle and wait for a double press or `USR2`). Single press splits the session,
+  double press starts or stops.
 - `SIGUSR1` (split) and `SIGUSR2` (toggle) for remote control.
 - Systemd `Type=notify` with a 30 s watchdog, and `ExecStopPost` script showing a crash
-  on the red LED.
+  on the red LED. A crash ends in the `error` state (session closed `complete`), so the
+  next start warns.
 - `[control]` and `[leds]` config tables.
 - Pi acceptance for the LEDs and button in `docs/pi-acceptance.md`.
 

@@ -10,6 +10,9 @@ require_mountpoint = false  # refuse to record unless recordings_dir is a mount 
 stop_below_mb = 1024     # stop recording when free space drops below this, MiB
 resume_above_mb = 1536   # resume recording when free space rises above this, MiB
 check_interval_s = 5.0   # free-space check period, seconds
+                         # radar data is flushed to disk at each check: with the camera
+                         # missing, the green LED pulse can run ahead of the radar data
+                         # reaching the disk by up to this long
 
 [camera]
 enabled = true           # record video
@@ -36,7 +39,7 @@ silence_timeout_s = 5.0  # no radar frames for this long counts as a failure, se
 # no_target_delay_s = 1      # 0..255 s
 
 [control]
-start_mode = "idle"      # state at boot: "idle" (wait for the button) or "record"
+start_mode = "record"    # at start: "record" (default) or "idle" (wait for a double press / USR2)
 button_name = "button@3" # input-device name of the button (gpio-keys)
 double_press_s = 0.4     # max gap between two presses to count as a double press, seconds
 max_press_s = 1.0        # a press held longer than this is no longer a short press, seconds

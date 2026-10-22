@@ -414,7 +414,8 @@ systemctl show radar-cam-recorder -p Type,WatchdogUSec,MainPID  -> Type=notify W
    gap across the split (`segment gap` incident in `s000020`): **gap_ns = 4 725 070 000 (4.73 s)**,
    from the last frame of `s000019` (sensor ts 3548.334 s) to the first of `s000020`
    (3553.059 s). Slightly above the 3-4 s rotation gap, as the spec predicted.
-4. `USR2` -> idle: PASS. `s000020` `complete` (`stop_reason = "stopped by button"`),
+4. `USR2` -> idle: PASS. `s000020` `complete` (`stop_reason = "stopped by button"`; since renamed
+   `"stopped by command"`),
    status `idle`, green steady hi, red lo.
 5. Green dark within 5 s of `SIGSTOP`: PASS. Recording (green pulsing), then
    `systemctl kill --kill-whom=main -s STOP` at 23:59:40. G17 was lo in every 1 s sample from
@@ -455,6 +456,9 @@ Observations (not product changes):
 Wire as in the README (green GPIO 17 / pin 11, red GPIO 27 / pin 13, button GPIO 3 / pin 5,
 GND pins 9, 14, 6). Run `radar-cam-recorder status --config /etc/radar-cam-recorder.toml`
 and `journalctl -u radar-cam-recorder -f` over SSH while you test.
+These checks describe button-driven use (`[control] start_mode = "idle"`). With the default
+`"record"`, a start records at once instead of going idle; the warning after a problem is then
+only visible after a double press back to idle.
 
 1. Boot: power the Pi. Green blinks at 1 Hz from kernel start, then fast-blinks while the recorder is `starting`, then steady (idle), red off.
 2. Double press: recording starts, green pulses, a new session appears and is `in_progress`.
@@ -474,7 +478,20 @@ and `journalctl -u radar-cam-recorder -f` over SSH while you test.
    the red slow blink; any press clears the warning.
 6. `sudo systemctl kill --kill-whom=main -s KILL radar-cam-recorder`: red solid for the 5 s
    restart delay, then idle with the red warning blink.
-7. Unplug an LED or the button (power off first for the wiring), start the recorder: it keeps
-   working (signals still toggle recording) and the journal logs the missing device once.
+7. Missing devices. The kernel `gpio-led` / `gpio-key` devices stay registered when a wire is
+   unplugged, so exercise the missing-device path through the config instead:
+   `sudo cp /etc/radar-cam-recorder.toml /etc/radar-cam-recorder.toml.bak-absent`, then in
+   `/etc/radar-cam-recorder.toml` set `green = "absent"` inside the existing `[leds]` table and
+   `button_name = "absent"` inside the existing `[control]` table (or add those tables if they
+   are missing; never a second copy of a table), run `radar-cam-recorder check-config --config
+   /etc/radar-cam-recorder.toml`, then `sudo systemctl restart radar-cam-recorder`. Expected:
+   exactly one WARNING for the green LED (`LED absent: ...`) and one for the button
+   (`button 'absent' not found; running without it`) in `journalctl -u radar-cam-recorder`;
+   recording is unaffected (`USR2` / `USR1` still toggle and split; the red LED still works).
+   Revert: `sudo mv /etc/radar-cam-recorder.toml.bak-absent /etc/radar-cam-recorder.toml` and
+   restart the service.
+8. Unplugged parts (power off first for the wiring): with an LED or the button unplugged the
+   recorder keeps working and the signals still toggle recording (no log is expected: the
+   kernel devices are still there).
 
 Not to run remotely: `poweroff`, `halt`, `shutdown -h`; nobody can power the Pi back on.

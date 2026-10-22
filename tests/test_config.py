@@ -112,12 +112,16 @@ def test_snapshot_is_json() -> None:
 
 def test_control_defaults() -> None:
     cfg = parse_config(minimal())
-    assert cfg.control == ControlConfig("idle", "button@3", 0.4, 1.0, 5.0, 0.03)
+    assert cfg.control == ControlConfig("record", "button@3", 0.4, 1.0, 5.0, 0.03)
     assert cfg.leds == LedsConfig(True, "rcr-green", "rcr-red")
 
 
-def test_start_mode_record() -> None:
-    assert parse_config(minimal(control={"start_mode": "record"})).control.start_mode == "record"
+def test_start_mode_idle() -> None:
+    assert parse_config(minimal(control={"start_mode": "idle"})).control.start_mode == "idle"
+
+
+def test_example_config_records_at_start() -> None:
+    assert load_config(Path("deploy/config.example.toml")).control.start_mode == "record"
 
 
 @pytest.mark.parametrize(

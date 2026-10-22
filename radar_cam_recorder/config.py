@@ -285,7 +285,7 @@ def parse_config(data: Mapping[str, Any]) -> Config:
         },
     )
     control = ControlConfig(
-        start_mode=_get(ctl, "control", "start_mode", "idle", str),
+        start_mode=_get(ctl, "control", "start_mode", "record", str),
         button_name=_get(ctl, "control", "button_name", "button@3", str),
         double_press_s=_get(ctl, "control", "double_press_s", 0.4, float),
         max_press_s=_get(ctl, "control", "max_press_s", 1.0, float),

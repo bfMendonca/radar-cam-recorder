@@ -135,19 +135,17 @@ updated unit as in "Service" above.
 
 ### Modes and the button
 
-The recorder starts **idle** (running, not recording) on every start; set
-`[control] start_mode = "record"` to record at start for unattended use.
-
-**Behaviour change:** earlier versions recorded as soon as the service started. After
-upgrading, an unattended install stays idle and records nothing until a double press (or
-`USR2`). To record at start again, edit `/etc/radar-cam-recorder.toml`. If the file already
-has a `[control]` table (a copy of `deploy/config.example.toml` does), set `start_mode` inside
-it; a second `[control]` table is invalid TOML and the service would fail to load its config.
-If there is none, add this table:
+The recorder records as soon as it starts (`[control] start_mode = "record"`, the default),
+so an unattended install keeps recording after power-on and restarts. For button-driven use,
+set `start_mode = "idle"`: the recorder then starts idle (running, not recording) on every
+start and waits for a double press (or `USR2`). Edit `/etc/radar-cam-recorder.toml`: if the
+file already has a `[control]` table (a copy of `deploy/config.example.toml` does), set
+`start_mode` inside it; a second `[control]` table is invalid TOML and the service would fail
+to load its config. If there is none, add this table:
 
 ```toml
 [control]
-start_mode = "record"
+start_mode = "idle"
 ```
 
 Validate, then restart the service:
@@ -194,15 +192,18 @@ sudo systemctl kill --kill-whom=main -s USR2 radar-cam-recorder   # start / stop
 
 Green never claims "recording" without data: the recorder re-arms a finite kernel pulse
 whenever the camera or radar makes progress, so green goes dark within 5 s if the recorder
-freezes or dies. Brief overlays: press accepted = both LEDs flash once; rejected = red
-flashes twice; hold past 5 s = red fast blink until power-off. LEDs and button are optional:
+freezes or dies. Radar data is counted when it is read and reaches the disk at the next
+storage check, so with the camera missing the pulse can run ahead of the radar data on disk
+by up to `[storage] check_interval_s` (5 s by default). Brief overlays: press accepted = both LEDs flash once; rejected = red
+flashes twice; hold past 5 s = red fast blink until power-off (cleared, with a warning in the journal, if the
+Pi is still running 10 s later). LEDs and button are optional:
 a missing device is logged once and ignored.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `run [--config PATH] [-v]` | Idle until a command (or record at start with `start_mode = "record"`); runs until SIGTERM/SIGINT; exit 0 after a signal stop, 1 on config error or crash. |
+| `run [--config PATH] [-v]` | Record at start (or idle until a command with `start_mode = "idle"`); runs until SIGTERM/SIGINT; exit 0 after a signal stop, 1 on config error or crash. |
 | `status [--config PATH]` | Print the live status file (`recording.status_file`); exit 1 if missing. |
 | `check-config [--config PATH]` | Print the parsed configuration as JSON. |
 | `inspect SESSION_DIR [--json]` | Print the session summary (frames, fps, gaps, radar reports, overlap). |
