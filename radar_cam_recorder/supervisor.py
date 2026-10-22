@@ -160,6 +160,11 @@ class Supervisor:
                 self.tick()
                 self._notify(heartbeat)  # e.g. the systemd watchdog: once per tick
                 stop.wait(tick_s)
+        except Exception as exc:
+            # A crash: close the session safely, but end in ERROR, not STOPPED, so the status
+            # file says "unclean" and the next start warns (cli.previous_run_unclean).
+            self.shutdown(f"crashed: {type(exc).__name__}: {exc}", final=State.ERROR)
+            raise
         finally:
             self.shutdown()
 
@@ -216,8 +221,11 @@ class Supervisor:
         self._check_radar(now)
         self._update_state(now)
 
-    def shutdown(self, reason: str = "stopped by signal") -> None:
+    def shutdown(self, reason: str = "stopped by signal", final: State = State.STOPPED) -> None:
         """Stop in order (spec 6.3); idempotent, bounded and never raises.
+
+        ``final`` is the last published state: ``STOPPED`` for a clean stop, ``ERROR`` after a
+        crash (the session is still closed ``complete``; its data is safe).
 
         Must not run concurrently with :meth:`tick`: signal handlers set the stop event and
         :meth:`run` calls this after the current tick.
@@ -233,7 +241,7 @@ class Supervisor:
         except Exception:
             log.exception("error during shutdown")
         finally:
-            self._bus.set_state(State.STOPPED, reason)
+            self._bus.set_state(final, reason)
             self._bus.close()
 
     # -- commands and idle mode (spec 4) -------------------------------------------------
@@ -288,7 +296,7 @@ class Supervisor:
     def _stop_to_idle(self) -> None:
         self._want_recording = False  # storage recovery must not reopen a session
         self._bus.set_state(State.STOPPING, "stopping recording")
-        self._end_session("stopped by button")
+        self._end_session("stopped by command")  # button or SIGUSR2
         self._set_idle()
 
     def _split(self) -> None:
@@ -311,7 +319,13 @@ class Supervisor:
             self._bus.set_state(State.IDLE, "idle")
 
     def _report_progress(self) -> None:
-        """Call ``on_progress`` when a session is open and camera or radar data grew."""
+        """Call ``on_progress`` when a session is open and camera or radar data grew.
+
+        Radar progress counts bytes read into the writer's buffer (``writer.reads``), which is
+        flushed to disk only at each storage check (``[storage] check_interval_s``). So with the
+        camera missing, the green pulse can run ahead of the radar data reaching the disk by up
+        to ``check_interval_s`` (documented, accepted: a frozen process still stops the pulse).
+        """
         reads = self._writer.reads
         grew = reads > self._progress_reads
         self._progress_reads = reads

@@ -12,10 +12,11 @@ import pytest
 
 from radar_cam_recorder.camera.base import CameraSource
 from radar_cam_recorder.camera.fake import FakeCamera, FakeRun
+from radar_cam_recorder.cli import previous_run_unclean
 from radar_cam_recorder.clocks import ClockSample
 from radar_cam_recorder.config import Config
 from radar_cam_recorder.session import SegmentPaths, SessionStore
-from radar_cam_recorder.status import State
+from radar_cam_recorder.status import State, StatusFileSink
 from radar_cam_recorder.storage import StorageCheck
 from tests.test_supervisor import (
     Rig,
@@ -371,3 +372,130 @@ def test_run_heartbeat_reaches_recovery(
 
     rig.sup.run(stop, 0.0, heartbeat=heartbeat)
     assert len(beats) == 4  # three during recovery, one for the tick
+
+
+def test_crash_in_run_ends_in_error_not_stopped(
+    make: Callable[..., tuple[Rig, Calls]], tmp_path: Path
+) -> None:
+    status = tmp_path / "status.json"
+    checks = {"n": 0}
+
+    def storage(path: Path, require_mountpoint: bool) -> StorageCheck:
+        checks["n"] += 1
+        if checks["n"] > 1:
+            raise RuntimeError("boom")
+        return StorageCheck(True, 10 * GIB)
+
+    rig, _ = make(make_cfg(tmp_path), storage_check=storage)
+    rig.bus.add_sink(StatusFileSink(status))
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        rig.now[0] += S  # the next tick runs the (crashing) storage check
+
+    with pytest.raises(RuntimeError, match="boom"):
+        rig.sup.run(stop, 0.0, heartbeat=heartbeat)
+    sessions = session_dirs(rig.root)
+    assert len(sessions) == 1
+    data = read_json(sessions[0] / "session.json")
+    assert data["state"] == "complete"  # the data is safe
+    assert data["stop_reason"] == "crashed: RuntimeError: boom"
+    final = rig.bus.current
+    assert (final.state, final.reason) == (State.ERROR, "crashed: RuntimeError: boom")
+    assert states(rig)[-2:] == [
+        (State.STOPPING, "crashed: RuntimeError: boom"),
+        (State.ERROR, "crashed: RuntimeError: boom"),
+    ]
+    assert read_json(status)["state"] == "error"
+    assert previous_run_unclean(status) is True
+
+
+def test_signal_stop_still_ends_stopped(
+    make: Callable[..., tuple[Rig, Calls]], tmp_path: Path
+) -> None:
+    status = tmp_path / "status.json"
+    rig, _ = make(make_cfg(tmp_path))
+    rig.bus.add_sink(StatusFileSink(status))
+    stop = threading.Event()
+    rig.sup.run(stop, 0.0, heartbeat=stop.set)
+    assert rig.bus.current.state is State.STOPPED
+    assert previous_run_unclean(status) is False
+
+
+class FlakyCreateStore(SessionStore):
+    """``create`` raises ``error`` while it is set."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.error: Exception | None = None
+
+    def create(self, *args: Any, **kwargs: Any) -> Any:
+        if self.error is not None:
+            raise self.error
+        return super().create(*args, **kwargs)
+
+
+def test_split_whose_open_fails_retries(
+    make: Callable[..., tuple[Rig, Calls]], tmp_path: Path
+) -> None:
+    store = FlakyCreateStore(tmp_path)
+    rig, calls = make(make_cfg(tmp_path), store=store)
+    rig.sup.tick()
+    old = rig.sup.session
+    assert old is not None
+    store.error = RuntimeError("no luck")
+    rig.now[0] += S // 10
+    rig.sup.request("split")
+    rig.sup.tick()
+    assert calls.commands == [("split", True)]
+    assert rig.sup.session is None
+    assert state_of(rig) is State.ERROR
+    assert read_json(old.path / "session.json")["state"] == "complete"
+    rig.now[0] += S  # the next storage check retries, still failing
+    rig.sup.tick()
+    assert rig.sup.session is None
+    assert state_of(rig) is State.ERROR
+    store.error = None
+    rig.now[0] += S
+    rig.sup.tick()
+    new = rig.sup.session
+    assert new is not None and new.id != old.id
+    assert state_of(rig) is State.RECORDING
+    rig.now[0] += S
+    rig.sup.tick()
+    assert rig.sup.session is new  # opened once
+    assert len(session_dirs(rig.root)) == 2
+
+
+def test_split_whose_open_hits_storage_error(
+    make: Callable[..., tuple[Rig, Calls]], tmp_path: Path
+) -> None:
+    store = FlakyCreateStore(tmp_path)
+    rig, _ = make(make_cfg(tmp_path), store=store)
+    rig.sup.tick()
+    old = rig.sup.session
+    assert old is not None
+    store.error = OSError(5, "Input/output error")
+    rig.now[0] += S // 10
+    rig.sup.request("split")
+    rig.sup.tick()
+    assert rig.sup.session is None
+    assert state_of(rig) is State.STORAGE_MISSING
+    assert read_json(old.path / "session.json")["state"] == "complete"
+    store.error = None
+    rig.now[0] += S
+    rig.sup.tick()
+    assert rig.sup.session is not None and rig.sup.session.id != old.id
+    assert state_of(rig) is State.RECORDING
+    assert len(session_dirs(rig.root)) == 2
+
+
+def test_toggle_stop_reason(make: Callable[..., tuple[Rig, Calls]], tmp_path: Path) -> None:
+    rig, _ = make(make_cfg(tmp_path))
+    rig.sup.tick()
+    session = rig.sup.session
+    assert session is not None
+    rig.now[0] += S // 10
+    rig.sup.request("toggle")
+    rig.sup.tick()
+    assert read_json(session.path / "session.json")["stop_reason"] == "stopped by command"
