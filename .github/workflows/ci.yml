@@ -19,10 +19,10 @@ jobs:
     env:
       UV_PYTHON: "3.9"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --all-groups
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -39,9 +39,9 @@ jobs:
       # Without this, `uv run` follows .python-version (3.9) and rebuilds the venv.
       UV_PYTHON: ${{ matrix.python }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --all-groups
       - run: uv run pytest --cov --cov-report=term-missing
