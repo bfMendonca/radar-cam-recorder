@@ -90,6 +90,7 @@ turn stalled devices into retried failures instead of silent gaps.
 | HLK-LD2451 radar | On the Pi's hardware UART (`/dev/serial0`) |
 | Green and red LED, 2 x 330 ohm, push button | Optional: status and control |
 | Power | A 5 V supply or a battery/UPS board |
+| 3D-printed mount | [`hardware/pizero-radar-cam-testplate.stl`](hardware/pizero-radar-cam-testplate.stl): holds the camera, radar, Pi Zero and battery board (shown in the photos above) |
 
 ### Wiring
 

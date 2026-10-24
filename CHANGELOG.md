@@ -20,6 +20,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Pi acceptance for the LEDs and button in `docs/pi-acceptance.md`.
 - GitHub CI (lint, `mypy --strict`, tests on Python 3.9-3.13, x86-64 and ARM64), issue and
   pull request templates, `CONTRIBUTING.md`, `SECURITY.md` and the MIT `LICENSE` file.
+- 3D-printable test plate for the Pi Zero, camera, radar and battery board in `hardware/`.
 
 ### Changed
 
