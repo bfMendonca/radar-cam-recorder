@@ -14,7 +14,7 @@
 [![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-Zero-C51A4A?logo=raspberrypi&logoColor=white)](#hardware)
 [![GitHub stars](https://img.shields.io/github/stars/bfMendonca/radar-cam-recorder?style=flat&logo=github)](https://github.com/bfMendonca/radar-cam-recorder/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/bfMendonca/radar-cam-recorder?style=flat&logo=github)](https://github.com/bfMendonca/radar-cam-recorder/network/members)
-[![Last commit](https://img.shields.io/github/last-commit/bfMendonca/radar-cam-recorder)](https://github.com/bfMendonca/radar-cam-recorder/commits/main)
+[![Last commit](https://img.shields.io/github/last-commit/bfMendonca/radar-cam-recorder)](https://github.com/bfMendonca/radar-cam-recorder/commits/master)
 
 [Features](#features) ·
 [Hardware](#hardware) ·

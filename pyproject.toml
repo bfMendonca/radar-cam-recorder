@@ -32,7 +32,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/bfMendonca/radar-cam-recorder"
 Issues = "https://github.com/bfMendonca/radar-cam-recorder/issues"
-Changelog = "https://github.com/bfMendonca/radar-cam-recorder/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/bfMendonca/radar-cam-recorder/blob/master/CHANGELOG.md"
 
 [project.scripts]
 radar-cam-recorder = "radar_cam_recorder.cli:main"
