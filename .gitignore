@@ -14,3 +14,7 @@ htmlcov/
 build/
 dist/
 .DS_Store
+
+# Local data
+recordings/
+.superpowers/

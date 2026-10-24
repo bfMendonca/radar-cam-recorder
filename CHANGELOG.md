@@ -18,6 +18,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   next start warns.
 - `[control]` and `[leds]` config tables.
 - Pi acceptance for the LEDs and button in `docs/pi-acceptance.md`.
+- GitHub CI (lint, `mypy --strict`, tests on Python 3.9-3.13, x86-64 and ARM64), issue and
+  pull request templates, `CONTRIBUTING.md`, `SECURITY.md` and the MIT `LICENSE` file.
+
+### Changed
+
+- The `ld2451` driver is installed from <https://github.com/bfMendonca/ld2451> instead of a
+  sibling checkout.
+- The example systemd unit and config use user `pi` and `/home/pi/...`: adjust them to your install.
 
 ## [0.1.0] - 2026-10-20
 

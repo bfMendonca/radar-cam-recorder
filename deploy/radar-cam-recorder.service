@@ -6,10 +6,12 @@ After=local-fs.target
 Type=notify
 NotifyAccess=main
 WatchdogSec=30
-User=bmendonca
-WorkingDirectory=/home/bmendonca/workspace/radar-cam-recorder
-ExecStart=/home/bmendonca/workspace/radar-cam-recorder/.venv/bin/radar-cam-recorder run --config /etc/radar-cam-recorder.toml
-ExecStopPost=/home/bmendonca/workspace/radar-cam-recorder/deploy/rcr-leds-stop.sh
+# Adjust User= and the paths below to your install (the user needs groups video,
+# dialout, gpio and input).
+User=pi
+WorkingDirectory=/home/pi/radar-cam-recorder
+ExecStart=/home/pi/radar-cam-recorder/.venv/bin/radar-cam-recorder run --config /etc/radar-cam-recorder.toml
+ExecStopPost=/home/pi/radar-cam-recorder/deploy/rcr-leds-stop.sh
 RuntimeDirectory=radar-cam-recorder
 # Keep the status file across restarts (Restart=always) so `status` always has one.
 RuntimeDirectoryPreserve=yes

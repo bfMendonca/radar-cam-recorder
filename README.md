@@ -1,16 +1,121 @@
+<div align="center">
+
 # radar-cam-recorder
 
-Unattended recorder for a Raspberry Pi Zero with a camera (`rpicam-vid`) and an
-HLK-LD2451 24 GHz radar on the serial port. It starts at boot, writes video and radar
-data into numbered sessions with a shared monotonic clock, and survives device
-failures, full disks and power cuts. The radar is read through the
-[`ld2451`](../driver-hlk-ld2451) driver.
+**An unattended Raspberry Pi recorder for time-aligned camera video and HLK-LD2451 radar data.**
 
-## Install
+[![CI](https://github.com/bfMendonca/radar-cam-recorder/actions/workflows/ci.yml/badge.svg)](https://github.com/bfMendonca/radar-cam-recorder/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://img.shields.io/badge/mypy-strict-2A6DB2)](https://mypy-lang.org/)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+<br>
+[![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-Zero-C51A4A?logo=raspberrypi&logoColor=white)](#hardware)
+[![GitHub stars](https://img.shields.io/github/stars/bfMendonca/radar-cam-recorder?style=flat&logo=github)](https://github.com/bfMendonca/radar-cam-recorder/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/bfMendonca/radar-cam-recorder?style=flat&logo=github)](https://github.com/bfMendonca/radar-cam-recorder/network/members)
+[![Last commit](https://img.shields.io/github/last-commit/bfMendonca/radar-cam-recorder)](https://github.com/bfMendonca/radar-cam-recorder/commits/main)
 
-### On the Mac (development)
+[Features](#features) ·
+[Hardware](#hardware) ·
+[Install](#installation) ·
+[Configuration](#configuration) ·
+[LEDs and button](#status-leds-and-button) ·
+[Session format](#session-format) ·
+[Contributing](CONTRIBUTING.md)
+
+<br>
+
+<img src="docs/images/speed-trap-1.jpg" alt="Front of the recorder: Raspberry Pi camera above the HLK-LD2451 radar antenna on a 3D-printed mount" width="49%">
+<img src="docs/images/speed-trap-2.jpg" alt="Inside the recorder: Raspberry Pi Zero, camera ribbon and 18650 battery board on the 3D-printed base" width="49%">
+
+<sub>The prototype: camera and LD2451 radar on the front plate, Raspberry Pi Zero and battery on the base.</sub>
+
+</div>
+
+---
+
+`radar-cam-recorder` turns a Raspberry Pi Zero, a camera module and a
+[Hi-Link HLK-LD2451](https://www.hlktech.com/en/Goods-245.html) 24 GHz vehicle radar into a
+self-contained "speed trap" data logger. It starts at boot, records video (`rpicam-vid`) and
+raw radar frames into numbered sessions on a shared monotonic clock, and keeps going through
+device failures, full disks and power cuts. Two LEDs and a single button let you run it in
+the field without a laptop.
+
+The radar is driven by the companion [`ld2451`](https://github.com/bfMendonca/ld2451) driver.
+
+## Features
+
+- **Time-aligned recording**: every video frame carries its kernel sensor timestamp and every
+  radar frame its `CLOCK_BOOTTIME` receive time, so the two streams line up to about 50 ms.
+- **Built to run unattended**: `systemd` `Type=notify` service with a watchdog; camera and
+  radar failures are retried with exponential backoff and logged as incidents; a camera
+  that stays alive but stops delivering frames is detected and restarted.
+- **Safe with storage**: stop/resume free-space thresholds, atomic metadata writes, and
+  sessions left `in_progress` by a crash or power cut are marked `interrupted` on the next start.
+- **Segmented sessions**: video and radar rotate together into fixed-length segments, with
+  per-segment frame-drop statistics.
+- **Field controls**: green and red status LEDs and one button (split, start/stop, and a 5 s
+  hold to power off) through kernel `gpio-led`/`gpio-key` devices, with no Python GPIO library.
+- **Analysis-friendly reader**: `open_session()` gives you a summary, nearest-frame lookup
+  and a merged, time-ordered timeline of video frames and radar reports.
+- **Develop without hardware**: a fake camera and a loopback radar run the whole pipeline on
+  a laptop. Fully typed (`mypy --strict`), with a test suite that needs no devices.
+
+## How it works
+
+```mermaid
+flowchart LR
+    CAM[Camera module] -- CSI --> RP[rpicam-vid<br/>one process per segment]
+    RAD[HLK-LD2451] -- UART --> DRV[ld2451 driver]
+    RP -- H.264 + frame timestamps --> SUP
+    DRV -- raw frames + t_rx_ns --> SUP
+    BTN[Button<br/>gpio-key] --> SUP
+    SUP[Supervisor<br/>state machine · retries · disk policy] --> SES[(Session dir<br/>sNNNNNN/)]
+    SUP --> LED[Status LEDs<br/>gpio-led]
+    SUP --> ST[status.json]
+    SUP <-. READY / watchdog .-> SD[systemd]
+```
+
+The supervisor owns one session at a time. Each segment gets a fresh `rpicam-vid` process
+and a new radar capture file; a watchdog on the frame metadata and a radar silence timeout
+turn stalled devices into retried failures instead of silent gaps.
+
+## Hardware
+
+| Part | Notes |
+| --- | --- |
+| Raspberry Pi Zero / Zero W | Tested on Raspberry Pi OS (bookworm), 32-bit, Python 3.11 |
+| Raspberry Pi camera module | Any module supported by `rpicam-vid`; defaults are 1296x972 @ 25 fps |
+| HLK-LD2451 radar | On the Pi's hardware UART (`/dev/serial0`) |
+| Green and red LED, 2 x 330 ohm, push button | Optional: status and control |
+| Power | A 5 V supply or a battery/UPS board |
+
+### Wiring
+
+| Part | Pi side (physical pin) | Wiring |
+| --- | --- | --- |
+| Radar 5V / GND | 2 (5 V) / any GND | |
+| Radar TX | 10 (GPIO 15, RXD) | radar TX -> Pi RX |
+| Radar RX | 8 (GPIO 14, TXD) | radar RX -> Pi TX |
+| Green LED | 11 (GPIO 17) | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 9) |
+| Red LED | 13 (GPIO 27) | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 14) |
+| Button | 5 (GPIO 3) | GPIO 3 -> button -> GND (pin 6) |
+
+Enable the serial port and disable the serial console (`raspi-config` → Interface Options →
+Serial Port); see the [`ld2451` README](https://github.com/bfMendonca/ld2451#wiring) for details.
+GPIO 3 has a fixed on-board pull-up, and grounding it wakes a halted Pi, so the same button
+powers the Pi back on after a long-press shutdown (to be confirmed by the hands-on check in
+[`docs/pi-acceptance.md`](docs/pi-acceptance.md)). Consequence: keep `i2c_arm` disabled in
+`config.txt`.
+
+## Installation
+
+### On a development machine
 
 ```sh
+git clone https://github.com/bfMendonca/radar-cam-recorder.git
+cd radar-cam-recorder
 uv sync --all-groups
 uv run pytest -q
 ```
@@ -24,8 +129,7 @@ uv run radar-cam-recorder run --fake --config my-dev.toml
 
 ### On the Pi
 
-Install uv (release 0.10.10, `arm-unknown-linux-musleabihf` build) into `~/.local/bin`,
-then build the environment against the system Python (do not use the development pin):
+Install uv (release 0.10.10, `arm-unknown-linux-musleabihf` build) into `~/.local/bin`:
 
 ```sh
 mkdir -p ~/.local/bin
@@ -34,20 +138,25 @@ install -m 755 /tmp/uv-arm-unknown-linux-musleabihf/uv ~/.local/bin/uv
 uv --version
 ```
 
-The repo's `.python-version` (3.9) is for the Mac. On the Pi, make uv use the system
+The repo's `.python-version` (3.9) is for development. On the Pi, make uv use the system
 Python 3.11 for every command by adding this to `~/.profile` (then log in again):
 
 ```sh
 export UV_PYTHON=/usr/bin/python3
 ```
 
+Then clone and build the environment:
+
 ```sh
-cd ~/workspace/radar-cam-recorder
+git clone https://github.com/bfMendonca/radar-cam-recorder.git ~/radar-cam-recorder
+cd ~/radar-cam-recorder
 uv sync               # the test group pins a pure-Python hypothesis: nothing to compile
 uv run pytest -q      # slow on a Pi Zero: allow several minutes
 ```
 
-The service must run from this environment (`.venv/bin/radar-cam-recorder`).
+The service must run from this environment (`.venv/bin/radar-cam-recorder`). The service
+user needs the groups `video` (camera), `dialout` (serial), and `gpio` and `input` (LEDs and
+button).
 
 ## Configuration
 
@@ -77,8 +186,12 @@ journalctl -u radar-cam-recorder -f
 radar-cam-recorder status --config /etc/radar-cam-recorder.toml
 ```
 
-The unit is `Type=notify` with a 30 s watchdog and an `ExecStopPost` LED script; see
-"Status LEDs and button". Adjust `User=`, `WorkingDirectory=` and `ExecStart=` to your install path.
+The unit assumes user `pi` and a checkout in `/home/pi/radar-cam-recorder`: adjust `User=`,
+`WorkingDirectory=`, `ExecStart=` and `ExecStopPost=` to your install.
+
+The unit is `Type=notify` with `WatchdogSec=30`: the recorder sends `READY=1` and a
+watchdog ping each tick, and a hung main loop is killed and restarted by systemd. Its
+`ExecStopPost` LED script is described in [Status LEDs and button](#status-leds-and-button).
 
 `KillMode=mixed` matters: with the default (control-group) mode systemd would send
 SIGTERM to `rpicam-vid` as well, preempting the recorder's own clean stop (SIGINT, so
@@ -88,19 +201,9 @@ process is SIGKILLed after `TimeoutStopSec`.
 ## Status LEDs and button
 
 A green and a red LED and one push button on the Pi's GPIO header show the recorder state
-and control it without a laptop. All are kernel devices (no Python GPIO library).
-
-### Wiring
-
-| Part | GPIO | Header pin | Wiring |
-| --- | --- | --- | --- |
-| Green LED | 17 | 11 | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 9) |
-| Red LED | 27 | 13 | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 14) |
-| Button | 3 | 5 | GPIO 3 -> button -> GND (pin 6) |
-
-GPIO 3 has a fixed on-board pull-up, and grounding it wakes a halted Pi, so the same
-button powers the Pi back on after a long-press shutdown (to be confirmed by the hands-on
-check in `docs/pi-acceptance.md`). Consequence: keep `i2c_arm` disabled in `config.txt`.
+and control it without a laptop. All are kernel devices (no Python GPIO library); see
+[Wiring](#wiring) for the pins. LEDs and button are optional: a missing device is logged
+once and ignored.
 
 ### Kernel setup (once, on the Pi)
 
@@ -117,21 +220,13 @@ grep -q rcr-green /boot/firmware/config.txt || \
 sudo reboot
 ```
 
-- `config.txt.snippet`: two `gpio-led` overlays (`rcr-green` on GPIO 17 with a 1 Hz `timer`
-  blink from kernel start, `rcr-red` on GPIO 27) and a `gpio-key` overlay on GPIO 3
-  (active low, pull-up, `KEY_POWER`). The input device is named `button@3`.
-- `rcr-leds.conf` loads the `ledtrig-pattern` module.
-- `99-rcr-leds.rules` lets group `gpio` write the `rcr-*` LED attributes (the service user
-  must be in groups `gpio` and `input`).
-- `logind-rcr-button.conf`: `HandlePowerKey=ignore`, `HandlePowerKeyLongPress=poweroff`.
-  logind powers the Pi off after a 5 s hold by itself, even if the recorder is hung.
-- `rcr-leds-stop.sh` is the unit's `ExecStopPost`: red solid after a crash or kill
-  (`$SERVICE_RESULT` not `success`); after a clean stop both LEDs go off, except during
-  system poweroff, when the "shutting down" blink is left running.
-
-The unit is `Type=notify` with `WatchdogSec=30`: the recorder sends `READY=1` and a
-watchdog ping each tick, and a hung main loop is killed and restarted by systemd. Copy the
-updated unit as in "Service" above.
+| File | Purpose |
+| --- | --- |
+| `config.txt.snippet` | Two `gpio-led` overlays (`rcr-green` on GPIO 17 with a 1 Hz `timer` blink from kernel start, `rcr-red` on GPIO 27) and a `gpio-key` overlay on GPIO 3 (active low, pull-up, `KEY_POWER`). The input device is named `button@3`. |
+| `rcr-leds.conf` | Loads the `ledtrig-pattern` module. |
+| `99-rcr-leds.rules` | Lets group `gpio` write the `rcr-*` LED attributes. |
+| `logind-rcr-button.conf` | `HandlePowerKey=ignore`, `HandlePowerKeyLongPress=poweroff`: logind powers the Pi off after a 5 s hold by itself, even if the recorder is hung. |
+| `rcr-leds-stop.sh` | The unit's `ExecStopPost`: red solid after a crash or kill (`$SERVICE_RESULT` not `success`); after a clean stop both LEDs go off, except during system poweroff, when the "shutting down" blink is left running. |
 
 ### Modes and the button
 
@@ -194,10 +289,11 @@ Green never claims "recording" without data: the recorder re-arms a finite kerne
 whenever the camera or radar makes progress, so green goes dark within 5 s if the recorder
 freezes or dies. Radar data is counted when it is read and reaches the disk at the next
 storage check, so with the camera missing the pulse can run ahead of the radar data on disk
-by up to `[storage] check_interval_s` (5 s by default). Brief overlays: press accepted = both LEDs flash once; rejected = red
-flashes twice; hold past 5 s = red fast blink until power-off (cleared, with a warning in the journal, if the
-Pi is still running 10 s later). LEDs and button are optional:
-a missing device is logged once and ignored.
+by up to `[storage] check_interval_s` (5 s by default).
+
+Brief overlays: press accepted = both LEDs flash once; rejected = red flashes twice; hold
+past 5 s = red fast blink until power-off (cleared, with a warning in the journal, if the
+Pi is still running 10 s later).
 
 ## Commands
 
@@ -237,7 +333,7 @@ that ever differs. A session left `in_progress` by a crash or power cut is marke
 from pathlib import Path
 from radar_cam_recorder.reader import open_session
 
-session = open_session(Path("/home/bmendonca/recordings/s000001"))
+session = open_session(Path("recordings/s000001"))
 print(session.summary())
 for item in session.timeline():   # video frames and radar reports in time order
     ...
@@ -254,7 +350,7 @@ Skip sessions that are still being written (`state` is `in_progress`) or whose
 `session.json` is unreadable. The exclude list is built on the Pi by parsing the JSON:
 
 ```sh
-PI=homegateway
+PI=raspberrypi.local   # SSH host of your Pi
 skip=$(mktemp)
 ssh "$PI" 'python3 -c "import json,pathlib
 for p in sorted(pathlib.Path.home().joinpath(\"recordings\").glob(\"*/session.json\")):
@@ -277,3 +373,29 @@ rm -f "$skip"
 - Video and radar are aligned to about 50 ms.
 - The Pi Zero has no RTC: wall-clock times are unreliable until NTP syncs, so rely on
   the monotonic timestamps and the recorded clock samples.
+
+## Documentation
+
+- [`docs/pi-acceptance.md`](docs/pi-acceptance.md): hands-on acceptance checks and measured results on a Pi Zero.
+- [`docs/leds-button-spike.md`](docs/leds-button-spike.md): kernel LED and button findings.
+- [`CHANGELOG.md`](CHANGELOG.md): release notes.
+
+## Contributing
+
+Bug reports, field results and pull requests are welcome; see
+[CONTRIBUTING.md](CONTRIBUTING.md). Please report security issues privately as described in
+[SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © Bruno Mendonça
+
+## Star history
+
+<a href="https://star-history.com/#bfMendonca/radar-cam-recorder&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=bfMendonca/radar-cam-recorder&type=Date&theme=dark">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=bfMendonca/radar-cam-recorder&type=Date">
+    <img alt="Star history chart" src="https://api.star-history.com/svg?repos=bfMendonca/radar-cam-recorder&type=Date">
+  </picture>
+</a>

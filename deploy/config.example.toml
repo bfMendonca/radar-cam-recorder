@@ -5,7 +5,7 @@ retry_max_s = 60.0       # upper bound of the retry backoff, seconds
 status_file = "/run/radar-cam-recorder/status.json"  # live status snapshot
 
 [storage]
-recordings_dir = "/home/bmendonca/recordings"  # where sessions are written (required)
+recordings_dir = "/home/pi/recordings"  # where sessions are written (required)
 require_mountpoint = false  # refuse to record unless recordings_dir is a mount point
 stop_below_mb = 1024     # stop recording when free space drops below this, MiB
 resume_above_mb = 1536   # resume recording when free space rises above this, MiB

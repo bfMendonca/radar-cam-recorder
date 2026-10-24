@@ -338,22 +338,10 @@ wheels = [
 [[package]]
 name = "ld2451"
 version = "0.1.0"
-source = { editable = "../driver-hlk-ld2451" }
+source = { git = "https://github.com/bfMendonca/ld2451.git?branch=main#e2fda7d12243a79a2d3e3407361b1f7a5903ee11" }
 dependencies = [
     { name = "pyserial" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
-    { name = "pyserial", specifier = ">=3.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "types-pyserial", marker = "extra == 'dev'" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "librt"
@@ -708,7 +696,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ld2451", editable = "../driver-hlk-ld2451" },
+    { name = "ld2451", git = "https://github.com/bfMendonca/ld2451.git?branch=main" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 

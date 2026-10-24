@@ -5,16 +5,34 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "radar-cam-recorder"
 version = "0.1.0"
-description = "Record Raspberry Pi camera video and HLK-LD2451 radar data"
+description = "Unattended Raspberry Pi recorder for time-aligned camera video and HLK-LD2451 radar data"
+readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
+authors = [{ name = "Bruno Mendonça" }]
+keywords = ["raspberry-pi", "radar", "ld2451", "hlk-ld2451", "rpicam", "camera", "speed-trap", "data-logger", "systemd"]
 dependencies = ["ld2451", 'tomli; python_version < "3.11"']
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
+    "Topic :: Multimedia :: Video :: Capture",
+    "Topic :: System :: Hardware",
     "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/bfMendonca/radar-cam-recorder"
+Issues = "https://github.com/bfMendonca/radar-cam-recorder/issues"
+Changelog = "https://github.com/bfMendonca/radar-cam-recorder/blob/main/CHANGELOG.md"
 
 [project.scripts]
 radar-cam-recorder = "radar_cam_recorder.cli:main"
@@ -27,7 +45,7 @@ dev = ["ruff>=0.5", "mypy>=1.10,<1.20", "pytest-cov>=4", "types-pyserial"]
 default-groups = ["test"]
 
 [tool.uv.sources]
-ld2451 = { path = "../driver-hlk-ld2451", editable = true }
+ld2451 = { git = "https://github.com/bfMendonca/ld2451.git", branch = "main" }
 
 [tool.setuptools]
 packages = ["radar_cam_recorder"]
@@ -56,7 +74,6 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.9"
 strict = true
 files = ["radar_cam_recorder", "tests"]
-mypy_path = "../driver-hlk-ld2451"  # editable path install is invisible to mypy
 
 [[tool.mypy.overrides]]
 module = ["tomli"]  # only installed (and imported) on Python < 3.11
