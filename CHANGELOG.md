@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
 ### Fixed
 
 - Packaging: non-editable installs (`pip install git+…`, `uv` git dependencies) now include the
@@ -49,3 +51,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Session reader with `summary()`, frame lookup and a merged frame/radar timeline.
 - CLI: `run`, `status`, `check-config`, `inspect`.
 - systemd unit and example configuration under `deploy/`.
+
+[Unreleased]: https://github.com/bfMendonca/radar-cam-recorder/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/bfMendonca/radar-cam-recorder/releases/tag/v0.2.0

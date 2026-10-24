@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "radar-cam-recorder"
-version = "0.1.0"
+version = "0.2.0"
 description = "Unattended Raspberry Pi recorder for time-aligned camera video and HLK-LD2451 radar data"
 readme = "README.md"
 requires-python = ">=3.9"
