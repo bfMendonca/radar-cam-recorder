@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Packaging: non-editable installs (`pip install git+…`, `uv` git dependencies) now include the
+  `radar_cam_recorder.camera` subpackage; `open_session` failed to import without it.
+
 ### Added
 
 - Status LEDs (green GPIO 17, red GPIO 27) and one button (GPIO 3) through kernel devices:

@@ -47,8 +47,8 @@ default-groups = ["test"]
 [tool.uv.sources]
 ld2451 = { git = "https://github.com/bfMendonca/ld2451.git", branch = "main" }
 
-[tool.setuptools]
-packages = ["radar_cam_recorder"]
+[tool.setuptools.packages.find]
+include = ["radar_cam_recorder*"]
 
 [tool.setuptools.package-data]
 radar_cam_recorder = ["py.typed"]
