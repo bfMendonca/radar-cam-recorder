@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from radar_cam_recorder.clocks import ClockSample, boot_clock, boot_id, ntp_synced, sample_clocks
+from radar_cam_recorder.clocks import (
+    ClockSample,
+    boot_clock,
+    boot_id,
+    ntp_synced,
+    rtc_info,
+    sample_clocks,
+    wall_clock_source,
+)
 
 
 def test_sample_uses_given_boot_clock() -> None:
@@ -43,3 +51,33 @@ def test_ntp_synced(tmp_path: Path) -> None:
     assert ntp_synced(marker) is False
     marker.write_text("")
     assert ntp_synced(marker) is True
+
+
+def _rtc(tmp_path: Path, since_epoch: int) -> Path:
+    (tmp_path / "name").write_text("rtc-ds3231 1-0068\n")
+    (tmp_path / "since_epoch").write_text(f"{since_epoch}\n")
+    return tmp_path
+
+
+def test_rtc_info_missing(tmp_path: Path) -> None:
+    assert rtc_info(tmp_path / "nope") == {"present": False}
+
+
+def test_rtc_info_unreadable_time(tmp_path: Path) -> None:
+    (tmp_path / "name").write_text("rtc-ds3231\n")
+    (tmp_path / "since_epoch").write_text("garbage\n")
+    assert rtc_info(tmp_path) == {"present": False}
+
+
+def test_rtc_info_reports_offset(tmp_path: Path) -> None:
+    info = rtc_info(_rtc(tmp_path, 1_000), realtime_ns=999_500_000_000)
+    assert info == {"present": True, "name": "rtc-ds3231", "since_epoch": 1_000, "offset_ms": 500}
+
+
+def test_wall_clock_source() -> None:
+    near = {"present": True, "offset_ms": -400}
+    far = {"present": True, "offset_ms": 90_000}
+    assert wall_clock_source(True, far) == "ntp"
+    assert wall_clock_source(False, near) == "rtc"
+    assert wall_clock_source(False, far) == "unsynced"
+    assert wall_clock_source(False, {"present": False}) == "unsynced"

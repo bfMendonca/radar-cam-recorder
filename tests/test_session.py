@@ -72,6 +72,8 @@ def test_create_writes_session_json(tmp_path: Path) -> None:
     assert data["devices"] == {}
     assert data["radar_latency_ns"] == 0
     assert data["ntp_synced"] is False
+    assert data["rtc"] == {"present": False}
+    assert data["wall_clock_source"] == "unsynced"
     assert data["segments"] == []
     assert data["stop_reason"] is None
     assert data["last_radar_t_rx_ns"] is None

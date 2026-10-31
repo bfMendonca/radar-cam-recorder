@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The button moved from GPIO 3 to GPIO 22 (pin 15); the input device is now `button@16` (GPIO 22 in hex), so the
+  `[control] button_name` default changed. Rewire it and replace the old `gpio-key,gpio=3` line
+  in `config.txt` with the one in `deploy/config.txt.snippet`. The button no longer wakes a
+  halted Pi.
+
+### Added
+
+- Optional I2C RTC support: `deploy/config.txt.rtc.snippet` and a README section.
+- `session.json` gains `rtc` and `wall_clock_source` (additive; `format_version` stays 1).
+
 ## [0.2.0] - 2026-10-23
 
 ### Fixed

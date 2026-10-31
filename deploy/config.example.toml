@@ -40,7 +40,7 @@ silence_timeout_s = 5.0  # no radar frames for this long counts as a failure, se
 
 [control]
 start_mode = "record"    # at start: "record" (default) or "idle" (wait for a double press / USR2)
-button_name = "button@3" # input-device name of the button (gpio-keys)
+button_name = "button@16" # input-device name of the button (gpio-keys)
 double_press_s = 0.4     # max gap between two presses to count as a double press, seconds
 max_press_s = 1.0        # a press held longer than this is no longer a short press, seconds
 long_press_s = 5.0       # hold this long for a long press, seconds (must exceed max_press_s)

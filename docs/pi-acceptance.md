@@ -453,8 +453,8 @@ Observations (not product changes):
 
 ## Hands-on checks: PENDING (need the parts wired, spec section 7)
 
-Wire as in the README (green GPIO 17 / pin 11, red GPIO 27 / pin 13, button GPIO 3 / pin 5,
-GND pins 9, 14, 6). Run `radar-cam-recorder status --config /etc/radar-cam-recorder.toml`
+Wire as in the README (green GPIO 17 / pin 11, red GPIO 27 / pin 13, button GPIO 22 / pin 15,
+GND pins 9, 14, 20). Run `radar-cam-recorder status --config /etc/radar-cam-recorder.toml`
 and `journalctl -u radar-cam-recorder -f` over SSH while you test.
 These checks describe button-driven use (`[control] start_mode = "idle"`). With the default
 `"record"`, a start records at once instead of going idle; the warning after a problem is then
@@ -469,8 +469,8 @@ only visible after a double press back to idle.
    radar-cam-recorder`). The watchdog restarts a frozen recorder about 30 s after the STOP, so
    start the hold within about 25 s of sending it. (The red fast blink after 5 s appears only when the recorder runs;
    frozen, it cannot.) Expected: the Pi powers off (logind), the LEDs go dark (to confirm that
-   `gpio-leds` turns them off at halt, R8), and then one press on the button powers it back on
-   (wake from halt on GPIO 3). Time the hold with a stopwatch from button down to the Pi powering off (green/red off, SSH
+   `gpio-leds` turns them off at halt, R8), and then power-cycling the Pi starts it again
+   (the button does not wake a halted Pi). Time the hold with a stopwatch from button down to the Pi powering off (green/red off, SSH
    dropped): expect about 5 s (logind's threshold is 5 s from memory).
    Repeat once with the recorder healthy: red fast blink after 5 s, then poweroff.
 5. Recording, then `sudo systemctl kill --kill-whom=main -s STOP radar-cam-recorder`: green

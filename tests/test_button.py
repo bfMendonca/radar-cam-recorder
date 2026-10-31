@@ -15,7 +15,7 @@ KEY_POWER = 116
 
 
 def make() -> GestureClassifier:
-    return GestureClassifier(ControlConfig("idle", "button@3", 0.4, 1.0, 5.0, 0.03))
+    return GestureClassifier(ControlConfig("idle", "button@16", 0.4, 1.0, 5.0, 0.03))
 
 
 def wait_until(cond: Callable[[], bool], timeout: float = 2.0) -> None:

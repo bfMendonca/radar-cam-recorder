@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from ld2451.clock import default_clock
 
@@ -45,3 +45,33 @@ def boot_id(path: Path = Path("/proc/sys/kernel/random/boot_id")) -> str:
 
 def ntp_synced(marker: Path = Path("/run/systemd/timesync/synchronized")) -> bool:
     return marker.exists()
+
+
+RTC_MAX_OFFSET_MS = 1000
+
+
+def rtc_info(
+    sysfs: Path = Path("/sys/class/rtc/rtc0"), realtime_ns: int | None = None
+) -> dict[str, Any]:
+    """The hardware RTC's driver name, time and offset from the system clock, if there is one."""
+    try:
+        name = (sysfs / "name").read_text().split()[0]
+        since_epoch = int((sysfs / "since_epoch").read_text())
+    except (OSError, ValueError, IndexError):
+        return {"present": False}
+    now_ns = time.time_ns() if realtime_ns is None else realtime_ns
+    return {
+        "present": True,
+        "name": name,
+        "since_epoch": since_epoch,
+        "offset_ms": since_epoch * 1000 - now_ns // 1_000_000,
+    }
+
+
+def wall_clock_source(ntp: bool, rtc: dict[str, Any]) -> str:
+    """ "ntp", "rtc" (RTC present and agreeing with the system clock) or "unsynced"."""
+    if ntp:
+        return "ntp"
+    if rtc.get("present") and abs(rtc["offset_ms"]) <= RTC_MAX_OFFSET_MS:
+        return "rtc"
+    return "unsynced"

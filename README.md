@@ -101,14 +101,14 @@ turn stalled devices into retried failures instead of silent gaps.
 | Radar RX | 8 (GPIO 14, TXD) | radar RX -> Pi TX |
 | Green LED | 11 (GPIO 17) | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 9) |
 | Red LED | 13 (GPIO 27) | GPIO -> 330 ohm -> LED anode, cathode -> GND (pin 14) |
-| Button | 5 (GPIO 3) | GPIO 3 -> button -> GND (pin 6) |
+| Button | 15 (GPIO 22) | GPIO 22 -> button -> GND (pin 14 or 20) |
+| RTC (optional) | 1 (3.3 V), 3 (SDA), 5 (SCL), any GND | I2C bus 1: GPIO 2 / GPIO 3 |
 
 Enable the serial port and disable the serial console (`raspi-config` → Interface Options →
 Serial Port); see the [`ld2451` README](https://github.com/bfMendonca/ld2451#wiring) for details.
-GPIO 3 has a fixed on-board pull-up, and grounding it wakes a halted Pi, so the same button
-powers the Pi back on after a long-press shutdown (to be confirmed by the hands-on check in
-[`docs/pi-acceptance.md`](docs/pi-acceptance.md)). Consequence: keep `i2c_arm` disabled in
-`config.txt`.
+The button's pull-up is enabled by the `gpio-key` overlay. GPIO 2 and 3 are left free for the
+I2C bus of the optional RTC (see [Real-time clock](#real-time-clock-optional)). The button does not
+wake a halted Pi: after a long-press shutdown, power-cycle the Pi to start it again.
 
 ## Installation
 
@@ -223,11 +223,36 @@ sudo reboot
 
 | File | Purpose |
 | --- | --- |
-| `config.txt.snippet` | Two `gpio-led` overlays (`rcr-green` on GPIO 17 with a 1 Hz `timer` blink from kernel start, `rcr-red` on GPIO 27) and a `gpio-key` overlay on GPIO 3 (active low, pull-up, `KEY_POWER`). The input device is named `button@3`. |
+| `config.txt.snippet` | Two `gpio-led` overlays (`rcr-green` on GPIO 17 with a 1 Hz `timer` blink from kernel start, `rcr-red` on GPIO 27) and a `gpio-key` overlay on GPIO 22 (active low, pull-up, `KEY_POWER`). The input device is named `button@16`. The name is the GPIO number in hex (22 = 0x16). |
+| `config.txt.rtc.snippet` | Optional: enables I2C and the `i2c-rtc` overlay (`ds3231` by default). See [Real-time clock](#real-time-clock-optional). |
 | `rcr-leds.conf` | Loads the `ledtrig-pattern` module. |
 | `99-rcr-leds.rules` | Lets group `gpio` write the `rcr-*` LED attributes. |
 | `logind-rcr-button.conf` | `HandlePowerKey=ignore`, `HandlePowerKeyLongPress=poweroff`: logind powers the Pi off after a 5 s hold by itself, even if the recorder is hung. |
 | `rcr-leds-stop.sh` | The unit's `ExecStopPost`: red solid after a crash or kill (`$SERVICE_RESULT` not `success`); after a clean stop both LEDs go off, except during system poweroff, when the "shutting down" blink is left running. |
+
+### Real-time clock (optional)
+
+An I2C RTC module (DS3231, PCF8523 or DS1307, with a CR2032 cell) keeps the wall clock right
+across power cuts without a network. Recording alignment is unchanged: it uses `CLOCK_BOOTTIME`,
+not the wall clock. Wire 3.3 V, GND, SDA (pin 3) and SCL (pin 5), then, on the Pi:
+
+```sh
+sudo cp /boot/firmware/config.txt /boot/firmware/config.txt.bak-rcr-rtc
+grep -q i2c-rtc /boot/firmware/config.txt || \
+  sudo sh -c 'cat deploy/config.txt.rtc.snippet >> /boot/firmware/config.txt'
+sudo apt remove fake-hwclock   # a real RTC replaces it
+sudo reboot
+```
+
+Edit the overlay name in the snippet first if the module is not a DS3231. After the reboot,
+`sudo hwclock -r` should read the module. Once NTP has synced, write the time once with
+`sudo hwclock -w`; from then on the system clock is set from the RTC at boot and the RTC is
+updated on every sync.
+
+`session.json` records the clock state at session start: `ntp_synced` (NTP only), `rtc`
+(`present`, `name`, `since_epoch` and `offset_ms` against the system clock) and
+`wall_clock_source`: `"ntp"`, `"rtc"` (an RTC is present and within 1 s of the system clock,
+so the clock was set from it; not verified) or `"unsynced"`.
 
 ### Modes and the button
 
@@ -372,8 +397,8 @@ rm -f "$skip"
 - Right after boot the camera stack needs about 10 s: expect one `camera exited` (or
   `camera stalled`) incident and a short `degraded` spell before recording settles.
 - Video and radar are aligned to about 50 ms.
-- The Pi Zero has no RTC: wall-clock times are unreliable until NTP syncs, so rely on
-  the monotonic timestamps and the recorded clock samples.
+- The Pi Zero has no RTC of its own: without the optional RTC module, wall-clock times are
+  unreliable until NTP syncs, so rely on the monotonic timestamps and the recorded clock samples.
 
 ## Documentation
 

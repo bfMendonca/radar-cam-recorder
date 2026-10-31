@@ -112,7 +112,7 @@ def test_snapshot_is_json() -> None:
 
 def test_control_defaults() -> None:
     cfg = parse_config(minimal())
-    assert cfg.control == ControlConfig("record", "button@3", 0.4, 1.0, 5.0, 0.03)
+    assert cfg.control == ControlConfig("record", "button@16", 0.4, 1.0, 5.0, 0.03)
     assert cfg.leds == LedsConfig(True, "rcr-green", "rcr-red")
 
 
@@ -141,5 +141,5 @@ def test_control_rejects(bad: dict[str, Any]) -> None:
 def test_snapshot_includes_control_and_leds() -> None:
     snapshot = config_to_dict(parse_config(minimal(leds={"enabled": False})))
     json.dumps(snapshot)
-    assert snapshot["control"]["button_name"] == "button@3"
+    assert snapshot["control"]["button_name"] == "button@16"
     assert snapshot["leds"] == {"enabled": False, "green": "rcr-green", "red": "rcr-red"}

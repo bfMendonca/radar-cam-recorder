@@ -149,6 +149,8 @@ def test_first_tick_opens_session_and_records(rig: Rig) -> None:
     assert data["devices"]["camera"] == {"backend": "fake", "fps": 25.0}
     assert data["setup"] == {"notes": "pole at the gate", "geometry": {"height_m": 2.5}}
     assert data["ntp_synced"] in (True, False)
+    assert data["wall_clock_source"] in ("ntp", "rtc", "unsynced")
+    assert "present" in data["rtc"]
     assert [s["label"] for s in data["clock_samples"]] == ["start"]
     assert data["config"]["recording"]["segment_s"] == 1.0
     wait_until(lambda: frame_count(rig.segment(0).meta) >= 1)

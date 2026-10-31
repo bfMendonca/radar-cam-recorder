@@ -20,7 +20,15 @@ import ld2451
 
 from radar_cam_recorder.camera.base import CameraRun, CameraSource
 from radar_cam_recorder.camera.metadata import parse_metadata, write_frames
-from radar_cam_recorder.clocks import Clock, boot_clock, boot_id, ntp_synced, sample_clocks
+from radar_cam_recorder.clocks import (
+    Clock,
+    boot_clock,
+    boot_id,
+    ntp_synced,
+    rtc_info,
+    sample_clocks,
+    wall_clock_source,
+)
 from radar_cam_recorder.config import Config, config_to_dict
 from radar_cam_recorder.radar import RadarStream, SegmentedRadarWriter
 from radar_cam_recorder.session import SegmentPaths, Session, SessionState, SessionStore
@@ -473,10 +481,14 @@ class Supervisor:
             self._writer.open(segment.radar)
             self._start_radar(now, save=False)
         self._start_camera_segment(segment, now)
+        ntp = ntp_synced()
+        rtc = rtc_info()
         session.update(
             devices=self._devices,
             setup={"notes": self._cfg.setup.notes, "geometry": dict(self._cfg.setup.geometry)},
-            ntp_synced=ntp_synced(),
+            ntp_synced=ntp,
+            rtc=rtc,
+            wall_clock_source=wall_clock_source(ntp, rtc),
         )
         now = self._clock()  # starting the devices takes time
         self._check_camera(now)

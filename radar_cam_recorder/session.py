@@ -174,6 +174,8 @@ class SessionStore:
             "devices": {},
             "radar_latency_ns": 0,
             "ntp_synced": False,
+            "rtc": {"present": False},
+            "wall_clock_source": "unsynced",
             "clock_samples": [{"label": "start", **start.as_dict()}],
             "segments": [],
             "stop_reason": None,

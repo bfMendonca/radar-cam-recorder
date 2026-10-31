@@ -1,0 +1,5 @@
+# radar-cam-recorder: I2C real-time clock (append to /boot/firmware/config.txt)
+# I2C bus 1 uses GPIO 2 (SDA) and GPIO 3 (SCL), pins 3 and 5. Change ds3231 to
+# pcf8523 or ds1307 to match the module.
+dtparam=i2c_arm=on
+dtoverlay=i2c-rtc,ds3231
